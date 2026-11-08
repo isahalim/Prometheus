@@ -5,7 +5,7 @@ import {
   type PublicKeyCredentialCreationOptionsJSON,
   type PublicKeyCredentialRequestOptionsJSON,
 } from "@simplewebauthn/browser";
-import { BRUSHES, LIMITS, type BrushName, type BudgetStatus, type TurnResponse } from "../shared/protocol.ts";
+import { BRUSHES, LIMITS, SHAPES, type AgentAction, type BrushName, type BudgetStatus, type ShapeKind, type TurnResponse } from "../shared/protocol.ts";
 import { createWall, type WallRenderer } from "./wall/wall.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -157,6 +157,36 @@ async function enterStudio() {
   redo.addEventListener("click", () => studio.redoStep());
   $("reset").addEventListener("click", () => studio.resetCube());
 
+  // Shapes: pick one, then click the clay where it should grow (or be carved).
+  let shapeMode: "add" | "subtract" = "add";
+  const setShapeMode = (mode: "add" | "subtract") => {
+    shapeMode = mode;
+    $("shape-add").setAttribute("aria-pressed", String(mode === "add"));
+    $("shape-carve").setAttribute("aria-pressed", String(mode === "subtract"));
+  };
+  $("shape-add").addEventListener("click", () => setShapeMode("add"));
+  $("shape-carve").addEventListener("click", () => setShapeMode("subtract"));
+  const shapeRail = $("shapes");
+  for (const shape of SHAPES) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "clicky";
+    button.textContent = shape[0].toUpperCase() + shape.slice(1);
+    button.addEventListener("click", () => {
+      for (const b of shapeRail.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b === button));
+      showToast(`Click the clay to ${shapeMode === "add" ? "add" : "carve"} a ${shape} (size follows Radius).`);
+      studio.armShape(shape as ShapeKind, shapeMode, (ms) => {
+        button.setAttribute("aria-pressed", "false");
+        showToast(`${shapeMode === "add" ? "Added" : "Carved"} a ${shape} — remeshed in ${ms} ms.`);
+      });
+    });
+    shapeRail.append(button);
+  }
+  $("remesh").addEventListener("click", () => {
+    showToast("Remeshing…");
+    requestAnimationFrame(() => setTimeout(() => showToast(`Remeshed in ${studio.remeshWith([])} ms.`), 0));
+  });
+
   window.addEventListener("keydown", (e) => {
     if ((e.target as HTMLElement).closest("input, textarea")) return;
     const key = e.key.toLowerCase();
@@ -229,7 +259,13 @@ async function enterStudio() {
       if (response.say) post("agent", response.say);
       if (response.intent) $("intent").textContent = `${response.intent.summary} (${Math.round(response.intent.confidence * 100)}%)`;
       if (response.plan?.length) $("plan").textContent = response.plan.join(" → ");
-      if (response.actions.length) post("system", `${response.actions.length} stroke${response.actions.length > 1 ? "s" : ""}: ${response.actions.map((a) => a.why || a.brush).join(", ")}`);
+      if (response.target) $("target").textContent = response.target;
+      if (response.assessment) $("assessment").textContent = response.assessment;
+      const ms = response.milestones ?? [];
+      $("milestones").hidden = ms.length === 0;
+      $("milestones").replaceChildren(...ms.map((m) => Object.assign(document.createElement("li"), { textContent: m.text, className: m.done ? "done" : "" })));
+      if (response.done) post("system", "Prometheus considers this finished. Sculpt or send a message and it picks up again.");
+      if (response.actions.length) post("system", `${response.actions.length} action${response.actions.length > 1 ? "s" : ""}: ${response.actions.map(describeAction).join(", ")}`);
       frames.push(frameUrl);
       while (frames.length > LIMITS.recentFrames) frames.shift();
       $("frames").replaceChildren(...frames.map((src) => Object.assign(document.createElement("img"), { src, alt: "Recent frame the agent remembers" })));
@@ -270,6 +306,17 @@ async function enterStudio() {
   $("lt-count").textContent = `${memory.longTerm.length}/${LIMITS.longTermChars}`;
 
   post("system", "Drag on the clay to sculpt. The agent watches your strokes and joins in — tell it what you're making.");
+}
+
+function describeAction(a: AgentAction): string {
+  if (a.why) return a.why;
+  switch (a.kind) {
+    case "stroke": return a.brush;
+    case "form": return a.op;
+    case "global": return `${a.op} all`;
+    case "shape": return `${a.mode} ${a.shape}`;
+    case "remesh": return "remesh";
+  }
 }
 
 function renderBudget(b: BudgetStatus) {

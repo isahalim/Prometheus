@@ -8,17 +8,22 @@
  * are further spaced per mode, and the server-side Gate has the final word on
  * the shared Gemini budget, so this layer only ever asks politely.
  */
-import type { ActionResult, AgentMode, BudgetStatus, TurnRequest, TurnResponse } from "../../shared/protocol.ts";
+import { PANEL_PX, type ActionResult, type AgentMode, type BudgetStatus, type ShapeAction, type TurnRequest, type TurnResponse } from "../../shared/protocol.ts";
 import type { Studio } from "../sculpt/studio.ts";
 
 export type LoopMode = AgentMode | "off";
 
 /** Client-side spacing of ambient turns (the server enforces its own floor too). */
-const AMBIENT_MIN_GAP_MS: Record<AgentMode, number> = { lead: 14_000, follow: 22_000, watch: 45_000 };
+const AMBIENT_MIN_GAP_MS: Record<AgentMode, number> = { lead: 1_500, follow: 22_000, watch: 45_000 };
 /** How long the human must pause after strokes before the agent looks. */
 const PAUSE_BEFORE_LOOK_S = 2.2;
-/** In lead mode, the agent takes the initiative after this much human idleness. */
-const LEAD_IDLE_S = 7;
+/**
+ * Lead mode iterates continuously: as soon as one turn's actions have played
+ * out, the next look is taken (the server Gate still spaces calls evenly
+ * across the minute). It stops only when the agent declares the sculpture
+ * done, the budget reserve is reached, or the human switches mode — and a
+ * new human stroke or message after "done" starts it again.
+ */
 
 export interface LoopEvents {
   onThinking(thinking: boolean): void;
@@ -30,6 +35,8 @@ export interface LoopEvents {
 
 export class AgentLoop {
   mode: LoopMode = "follow";
+  /** Lead mode: the agent said the piece is finished; resumes on new human input. */
+  leadDone = false;
   readonly sessionId = crypto.randomUUID();
   private inFlight = false;
   private lastAmbientAt = 0;
@@ -62,6 +69,7 @@ export class AgentLoop {
   /** A human message always gets through: if a turn is in flight it is sent the moment that one finishes. */
   async ask(message: string) {
     if (this.mode === "off") this.mode = "follow";
+    this.leadDone = false;
     if (this.inFlight) {
       this.queued = message;
       return;
@@ -75,7 +83,8 @@ export class AgentLoop {
     if (now < this.blockedUntil || now - this.lastAmbientAt < AMBIENT_MIN_GAP_MS[this.mode]) return;
     const idle = this.studio.idleSeconds;
     const fresh = this.studio.pendingHumanStrokes > 0 && idle >= PAUSE_BEFORE_LOOK_S;
-    const initiative = this.mode === "lead" && idle >= LEAD_IDLE_S;
+    if (fresh) this.leadDone = false;
+    const initiative = this.mode === "lead" && !this.leadDone;
     if (!fresh && !initiative) return;
     this.lastAmbientAt = now;
     await this.turn("ambient");
@@ -85,12 +94,13 @@ export class AgentLoop {
     if (this.inFlight) return;
     this.inFlight = true;
     this.events.onThinking(true);
-    const capture = this.studio.capture();
+    const mode: AgentMode = this.mode === "off" ? "follow" : this.mode;
+    const capture = this.studio.capture(PANEL_PX[mode]);
     const strokes = this.studio.takeStrokes();
     const request: TurnRequest = {
       sessionId: this.sessionId,
       trigger,
-      mode: this.mode === "off" ? "follow" : this.mode,
+      mode,
       message,
       observation: {
         sheet: capture.sheet,
@@ -109,7 +119,7 @@ export class AgentLoop {
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(90_000),
+        signal: AbortSignal.timeout(150_000),
       });
       if (res.status === 401) {
         location.reload();
@@ -125,13 +135,16 @@ export class AgentLoop {
 
     if (!response.ok) {
       this.blockedUntil = Date.now() + Math.min(response.retryAfterMs ?? 5_000, 10 * 60_000);
-      if (response.error !== "ambient_too_soon") this.events.onError(describeError(response));
+      // Transient conditions retry on their own; only say so when the human asked or it's a real problem.
+      const quiet = response.error === "ambient_too_soon" || ((response.error === "upstream_overloaded" || response.error === "busy") && trigger !== "human");
+      if (!quiet) this.events.onError(describeError(response));
       // Strokes the agent never saw go back into the log for next time.
       this.studio.returnStrokes(strokes);
       this.finish();
       return;
     }
 
+    if (response.done && mode === "lead") this.leadDone = true;
     this.events.onTurn(response, capture.thumbUrl);
     this.events.onThinking(false);
     this.lastResults = [];
@@ -139,8 +152,17 @@ export class AgentLoop {
       this.studio.setAgentBusy(true);
       this.events.onSculpting(true);
       this.studio.pushUndo();
-      for (const action of response.actions) {
-        this.lastResults.push(await this.studio.agentStroke(action, capture.half));
+      // Consecutive primitives share one voxel remesh.
+      for (let i = 0; i < response.actions.length; i++) {
+        const action = response.actions[i];
+        if (action.kind === "shape") {
+          const batch: ShapeAction[] = [];
+          while (i < response.actions.length && response.actions[i].kind === "shape") batch.push(response.actions[i++] as ShapeAction);
+          i--;
+          this.lastResults.push(...(await this.studio.agentShapes(batch)));
+        } else {
+          this.lastResults.push(await this.studio.agentAction(action, capture.half));
+        }
       }
       this.studio.setAgentBusy(false);
       this.events.onSculpting(false);
@@ -175,6 +197,8 @@ function describeError(response: TurnResponse): string {
       return "Today's Gemini budget is spent. It resets at midnight Pacific.";
     case "ambient_paused_reserve":
       return "Budget is low, so the agent only answers when you ask it directly.";
+    case "upstream_overloaded":
+      return "Gemini is overloaded right now — retrying in a few seconds.";
     case "rate_limited_upstream":
       return `Gemini asked us to slow down — pausing ${secs}s.`;
     default:

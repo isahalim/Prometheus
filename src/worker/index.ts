@@ -13,7 +13,7 @@ export { Studio } from "./do/studio.ts";
 export { Gate } from "./do/gate.ts";
 export { Atelier } from "./do/atelier.ts";
 
-const MAX_TURN_BYTES = 700_000;
+const MAX_TURN_BYTES = 1_500_000;
 const MODES: AgentMode[] = ["lead", "follow", "watch"];
 
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>

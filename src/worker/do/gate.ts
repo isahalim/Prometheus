@@ -28,13 +28,15 @@ import { intVar, type AppEnv } from "../env.ts";
 const INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const HUMAN_MAX_WAIT_MS = 40_000;
 const AMBIENT_MAX_WAIT_MS = 1_500;
-const REQUEST_TIMEOUT_MS = 45_000;
+/** Lead iterations queue for their slot (the human chose autonomy) but never ahead of a human ask. */
+const LEAD_MAX_WAIT_MS = 12_000;
+const REQUEST_TIMEOUT_MS = 110_000;
 /** Keep 10% of the token budget as headroom against estimate error. */
 const TPM_SAFETY = 0.9;
 const DEFAULT_COOLDOWN_MS = 20_000;
 
 export interface GateRequest {
-  priority: "human" | "ambient";
+  priority: "human" | "lead" | "ambient";
   /** Interactions request body, minus `model` (the Gate owns the model choice). */
   body: Record<string, unknown>;
   estTokens: number;
@@ -172,7 +174,7 @@ export class Gate extends DurableObject<AppEnv> {
     if (ledger.usedToday >= this.rpdLimit) {
       return { ok: false, error: "daily_limit", retryAfterMs: nextPacificMidnight(now) - now, budget: this.status() };
     }
-    if (req.priority === "ambient" && ledger.usedToday >= this.rpdLimit - this.reserve) {
+    if (req.priority !== "human" && ledger.usedToday >= this.rpdLimit - this.reserve) {
       return { ok: false, error: "ambient_paused_reserve", retryAfterMs: nextPacificMidnight(now) - now, budget: this.status() };
     }
 
@@ -183,7 +185,7 @@ export class Gate extends DurableObject<AppEnv> {
     if (ledger.recent.length >= this.rpmLimit) slot = Math.max(slot, ledger.recent[ledger.recent.length - this.rpmLimit].t + 60_000);
 
     const wait = slot - now;
-    const maxWait = req.priority === "human" ? HUMAN_MAX_WAIT_MS : AMBIENT_MAX_WAIT_MS;
+    const maxWait = req.priority === "human" ? HUMAN_MAX_WAIT_MS : req.priority === "lead" ? LEAD_MAX_WAIT_MS : AMBIENT_MAX_WAIT_MS;
     if (wait > maxWait) return { ok: false, error: "busy", retryAfterMs: wait, budget: this.status() };
 
     // Reserve synchronously — before any await — so concurrent callers queue behind.
@@ -221,6 +223,12 @@ export class Gate extends DurableObject<AppEnv> {
       ledger.nextSlotAt = Math.max(ledger.nextSlotAt, ledger.cooldownUntil);
       this.persist();
       return { ok: false, error: "rate_limited_upstream", retryAfterMs: delay, budget: this.status() };
+    }
+    // Model overloaded ("high demand", 503/UNAVAILABLE): transient, retry shortly, and don't hold it against the day.
+    if (response.status === 503 || /UNAVAILABLE|high demand|overloaded/i.test(data.error?.message ?? "")) {
+      ledger.usedToday = Math.max(0, ledger.usedToday - 1);
+      this.persist();
+      return { ok: false, error: "upstream_overloaded", retryAfterMs: 8_000, budget: this.status() };
     }
     if (!response.ok || data.error) {
       return { ok: false, error: `gemini: ${data.error?.message ?? `HTTP ${response.status}`}`.slice(0, 300), budget: this.status() };

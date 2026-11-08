@@ -12,10 +12,11 @@ import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 import { OBJExporter } from "three/addons/exporters/OBJExporter.js";
 import { STLExporter } from "three/addons/exporters/STLExporter.js";
 import { acceleratedRaycast } from "three-mesh-bvh";
-import type { ActionResult, BrushName, GeometrySummary, StrokeAction, StrokeSummary, ViewName } from "../../shared/protocol.ts";
+import type { ActionResult, AgentAction, BrushName, FormAction, GeometrySummary, GlobalAction, ShapeAction, ShapeKind, StrokeAction, StrokeSummary, ViewName } from "../../shared/protocol.ts";
 import { VIEWS } from "../../shared/protocol.ts";
-import { applyDab, Grab, mirrorX, type Vec3 } from "./brushes.ts";
+import { applyDab, applyForm, globalTarget, Grab, mirrorX, smoothAll, type Vec3 } from "./brushes.ts";
 import { SculptMesh } from "./mesh.ts";
+import { remesh, type ShapeSpec } from "./remesh.ts";
 import { frameHalfExtent, panelRay, viewCamera } from "./views.ts";
 
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
@@ -36,15 +37,22 @@ export interface Capture {
 }
 
 const UNDO_DEPTH = 40;
-const PANEL = 256;
+const MAX_PANEL = 320;
 const CLAY = new THREE.Color("#b8a693");
 const SHEET_BG = "#d6d0c6";
+
+interface MeshState {
+  positions: Float32Array;
+  index: Uint32Array;
+}
 
 const v3 = (v: THREE.Vector3): Vec3 => [v.x, v.y, v.z];
 const sleepFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
 
 export class Studio {
-  readonly mesh = new SculptMesh();
+  mesh = SculptMesh.cube();
+  /** Fires when a remesh replaces the topology (UI shows vertex count, etc.). */
+  onTopology: (vertices: number) => void = () => {};
   readonly settings: BrushSettings = { brush: "draw", radius: 0.22, strength: 0.5, symmetry: true };
   /** Called whenever the model changes or the agent cursor moves (wall glow, UI). */
   onFrame: (info: { center: [number, number]; radius: number }) => void = () => {};
@@ -58,9 +66,10 @@ export class Studio {
   private readonly cursor: THREE.Mesh;
   private readonly ghost: THREE.Group;
   private readonly raycaster = new THREE.Raycaster();
-  private readonly captureTarget = new THREE.WebGLRenderTarget(PANEL, PANEL, { samples: 4 });
-  private undo: Float32Array[] = [];
-  private redo: Float32Array[] = [];
+  private readonly captureTarget = new THREE.WebGLRenderTarget(MAX_PANEL, MAX_PANEL, { samples: 4 });
+  /** Undo entries carry the index too, so a remesh can be undone like any stroke. */
+  private undo: MeshState[] = [];
+  private redo: MeshState[] = [];
   private strokeLog: StrokeSummary[] = [];
   private lastObserved: Float32Array;
   private lastHumanActivity = performance.now();
@@ -78,6 +87,8 @@ export class Studio {
     pressure: number;
   } = null;
   private agentBusy = false;
+  /** A primitive waiting for the human to click where it goes. */
+  private armed: { shape: ShapeKind; mode: "add" | "subtract"; onPlaced: (ms: number) => void } | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
@@ -165,6 +176,14 @@ export class Studio {
     if (event.button !== 0 || this.stroking) return;
     const hit = this.pick(event);
     if (!hit) return; // empty space: OrbitControls orbits
+    if (this.armed) {
+      const { shape, mode, onPlaced } = this.armed;
+      this.armed = null;
+      this.canvas.style.cursor = "";
+      this.placeCursor(hit.point, hit.face?.normal ?? null);
+      onPlaced(this.placeShape(shape, mode));
+      return;
+    }
     this.controls.enabled = false;
     this.canvas.setPointerCapture(event.pointerId);
     this.pushUndo();
@@ -271,6 +290,106 @@ export class Studio {
 
   // ---------- agent hand ----------
 
+  /**
+   * Applies one agent action, animated. Consecutive shape actions should be
+   * batched by the caller into one `agentShapes` call (one remesh for all).
+   */
+  async agentAction(action: AgentAction, half: number): Promise<ActionResult> {
+    switch (action.kind) {
+      case "stroke": {
+        let result: ActionResult = { id: action.id, ok: false, hitRatio: 0 };
+        for (let pass = 0; pass < Math.max(1, Math.min(4, action.passes || 1)); pass++) result = await this.agentStroke(action, half);
+        return result;
+      }
+      case "form":
+        return this.agentForm(action);
+      case "global":
+        return this.agentGlobal(action);
+      case "shape":
+        return (await this.agentShapes([action]))[0];
+      case "remesh": {
+        await sleepFrame();
+        const ms = this.remeshWith([]);
+        return { id: action.id, ok: true, hitRatio: 1, note: `remeshed in ${ms} ms, ${this.mesh.vertexCount} verts` };
+      }
+    }
+  }
+
+  /** Several primitives in one remesh; the ember visits each centre first. */
+  async agentShapes(actions: ShapeAction[]): Promise<ActionResult[]> {
+    const specs: ShapeSpec[] = [];
+    for (const a of actions) {
+      const spec: ShapeSpec = { shape: a.shape, center: a.center, radius: a.radius, radii: a.radii, end: a.end, axis: a.axis, minor: a.minor, mode: a.mode, blend: a.blend };
+      specs.push(spec);
+      if (a.symmetry && Math.abs(a.center[0]) > a.radius * 0.3) specs.push(mirrorShape(spec));
+      this.ghost.visible = true;
+      this.ghost.scale.setScalar(Math.max(a.radius, ...(a.radii ?? [0])));
+      this.ghost.position.set(...a.center);
+      for (let i = 0; i < 8; i++) await sleepFrame();
+    }
+    await sleepFrame();
+    const ms = this.remeshWith(specs);
+    for (const a of actions) {
+      this.strokeLog.push({ by: "agent", brush: "clay", invert: a.mode === "subtract", center: round3(a.center), from: round3(a.center), to: round3(a.end ?? a.center), radius: round(a.radius), strength: 1, dabs: 1, symmetry: a.symmetry, t: round((performance.now() - this.t0) / 1000) });
+    }
+    return actions.map((a) => ({ id: a.id, ok: true, hitRatio: 1, note: `${a.mode} ${a.shape}; remeshed in ${ms} ms` }));
+  }
+
+  private snapToSurface(point: Vec3): THREE.Vector3 {
+    const target = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
+    const hit = this.mesh.bvh.closestPointToPoint(new THREE.Vector3(...point), target as never);
+    return hit ? hit.point.clone() : new THREE.Vector3(...point);
+  }
+
+  private async agentForm(a: FormAction): Promise<ActionResult> {
+    const steps = 12;
+    const centers: Vec3[] = [v3(this.snapToSurface(a.center))];
+    if (a.symmetry && Math.abs(centers[0][0]) > a.radius * 0.1) centers.push(mirrorX(centers[0]));
+    this.ghost.visible = true;
+    this.ghost.scale.setScalar(a.radius);
+    this.ghost.position.set(...centers[0]);
+    const displace = a.op === "add" || a.op === "carve" || a.op === "pull" || a.op === "push";
+    for (let i = 0; i < steps; i++) {
+      centers.forEach((c, k) => {
+        const dir = a.direction && k === 1 ? mirrorX(a.direction) : a.direction;
+        // Displacements are split across the animation; intensity ops run their passes once at the end.
+        if (displace) this.mesh.markDirty(applyForm(this.mesh, a.op, c, a.radius, a.amount / steps, dir));
+        else if (i === steps - 1) this.mesh.markDirty(applyForm(this.mesh, a.op, c, a.radius, a.amount, dir));
+      });
+      if (a.op === "pull" && a.direction) {
+        const d = new THREE.Vector3(...a.direction).normalize().multiplyScalar(a.amount / steps);
+        this.ghost.position.add(d);
+      }
+      await sleepFrame();
+    }
+    this.strokeLog.push({ by: "agent", brush: a.op === "pull" || a.op === "push" ? "grab" : a.op === "add" ? "clay" : a.op === "carve" ? "draw" : a.op, invert: a.op === "carve" || a.op === "push", center: round3(centers[0]), from: round3(centers[0]), to: round3(centers[0]), radius: round(a.radius), strength: round(a.amount), dabs: steps, symmetry: a.symmetry, t: round((performance.now() - this.t0) / 1000) });
+    return { id: a.id, ok: true, hitRatio: 1 };
+  }
+
+  private async agentGlobal(a: GlobalAction): Promise<ActionResult> {
+    const all = Array.from({ length: this.mesh.vertexCount }, (_, i) => i);
+    if (a.op === "smooth") {
+      const iterations = Math.max(1, Math.round(a.amount * 10));
+      for (let i = 0; i < iterations; i++) {
+        smoothAll(this.mesh, 1);
+        this.mesh.markDirty(all);
+        await sleepFrame();
+      }
+    } else {
+      const start = this.mesh.positions.slice();
+      const target = globalTarget(this.mesh, a.op, a.amount, a.scale);
+      const frames = 20;
+      for (let f = 1; f <= frames; f++) {
+        const t = f / frames, e = t * t * (3 - 2 * t);
+        const p = this.mesh.positions;
+        for (let i = 0; i < p.length; i++) p[i] = start[i] + (target[i] - start[i]) * e;
+        this.mesh.markDirty(all);
+        await sleepFrame();
+      }
+    }
+    return { id: a.id, ok: true, hitRatio: 1, note: `${a.op} ${a.amount}` };
+  }
+
   /** Replays one agent stroke, animated, with the ember cursor. Resolves when the stroke is done. */
   async agentStroke(action: StrokeAction, half: number): Promise<ActionResult> {
     const hits: THREE.Vector3[] = [];
@@ -369,8 +488,27 @@ export class Studio {
 
   // ---------- history ----------
 
+  private state(): MeshState {
+    return { positions: this.mesh.positions.slice(), index: this.mesh.index };
+  }
+
+  private apply(state: MeshState) {
+    if (state.index === this.mesh.index) this.mesh.restore(state.positions);
+    else this.replaceMesh(new SculptMesh(state.positions.slice(), state.index));
+  }
+
+  /** Swap in a new topology (remesh, undo across a remesh, new cube). */
+  private replaceMesh(mesh: SculptMesh) {
+    const old = this.mesh;
+    this.mesh = mesh;
+    this.clay.geometry = mesh.geometry;
+    old.geometry.dispose();
+    this.lastObserved = mesh.positions.slice();
+    this.onTopology(mesh.vertexCount);
+  }
+
   pushUndo() {
-    this.undo.push(this.mesh.positions.slice());
+    this.undo.push(this.state());
     if (this.undo.length > UNDO_DEPTH) this.undo.shift();
     this.redo = [];
     this.onHistory(true, false);
@@ -379,22 +517,53 @@ export class Studio {
   undoStep() {
     const prev = this.undo.pop();
     if (!prev) return;
-    this.redo.push(this.mesh.positions.slice());
-    this.mesh.restore(prev);
+    this.redo.push(this.state());
+    this.apply(prev);
     this.onHistory(this.undo.length > 0, true);
   }
 
   redoStep() {
     const next = this.redo.pop();
     if (!next) return;
-    this.undo.push(this.mesh.positions.slice());
-    this.mesh.restore(next);
+    this.undo.push(this.state());
+    this.apply(next);
     this.onHistory(true, this.redo.length > 0);
   }
 
   resetCube() {
     this.pushUndo();
-    this.mesh.restore(this.mesh.rest);
+    this.replaceMesh(SculptMesh.cube());
+  }
+
+  /** Voxel remesh, optionally blending primitives in. Synchronous (~0.3-1.5 s); callers show a status first. */
+  remeshWith(shapes: ShapeSpec[]): number {
+    this.pushUndo();
+    const result = remesh(this.mesh, shapes);
+    if (result.index.length === 0) return result.ms; // nothing came back; keep the old surface
+    this.replaceMesh(new SculptMesh(result.positions, result.index));
+    return result.ms;
+  }
+
+  /** Human tool: the next click on the clay places this primitive there. */
+  armShape(shape: ShapeKind, mode: "add" | "subtract", onPlaced: (ms: number) => void) {
+    this.armed = { shape, mode, onPlaced };
+    this.canvas.style.cursor = "copy";
+  }
+
+  /** Places a primitive at the brush cursor (where the clay was last touched). */
+  placeShape(shape: ShapeKind, mode: "add" | "subtract") {
+    const r = this.settings.radius * 1.6;
+    const at = this.cursor.visible ? this.cursor.position.clone() : new THREE.Vector3(0, 0, 0);
+    // Sink it a little into the surface so it fuses rather than touching at a point.
+    const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(this.cursor.quaternion);
+    if (this.cursor.visible && mode === "add") at.addScaledVector(normal, r * 0.35);
+    const base: ShapeSpec = { shape, center: v3(at), radius: r, mode, blend: r * 0.35 };
+    if (shape === "capsule") base.end = v3(at.clone().addScaledVector(normal, r * 2));
+    if (shape === "cylinder" || shape === "cone" || shape === "torus") { base.axis = v3(normal); base.minor = shape === "torus" ? r * 0.3 : r; }
+    if (shape === "box" || shape === "ellipsoid") base.radii = [r, r, r];
+    const shapes = [base];
+    if (this.settings.symmetry && Math.abs(base.center[0]) > r * 0.3) shapes.push(mirrorShape(base));
+    return this.remeshWith(shapes);
   }
 
   // ---------- observation ----------
@@ -435,7 +604,7 @@ export class Studio {
       displacement += Math.hypot(x - m.rest[o], y - m.rest[o + 1], z - m.rest[o + 2]);
       const q = m.mirror[v] * 3;
       asym += Math.hypot(x + p[q], y - p[q + 1], z - p[q + 2]);
-      const change = Math.hypot(x - this.lastObserved[o], y - this.lastObserved[o + 1], z - this.lastObserved[o + 2]);
+      const change = this.lastObserved.length === p.length ? Math.hypot(x - this.lastObserved[o], y - this.lastObserved[o + 1], z - this.lastObserved[o + 2]) : 0;
       if (change > 1e-4) {
         const key = (Math.floor((x + 3) * 1.5) * 16 + Math.floor((y + 3) * 1.5)) * 16 + Math.floor((z + 3) * 1.5);
         const cell = cells.get(key) ?? { x: 0, y: 0, z: 0, mag: 0, n: 0 };
@@ -447,8 +616,24 @@ export class Studio {
       .sort((a, b) => b.mag - a.mag)
       .slice(0, 4)
       .map((c) => ({ center: round3([c.x / c.mag, c.y / c.mag, c.z / c.mag]), magnitude: round(c.mag / Math.max(1, c.n) * 10) }));
+    // Nine horizontal slices of the form, bottom to top.
+    const slices: GeometrySummary["slices"] = [];
+    const span = max[1] - min[1] || 1;
+    const buckets = Array.from({ length: 9 }, () => ({ x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity, n: 0 }));
+    for (let o = 0; o < p.length; o += 3) {
+      const b = buckets[Math.min(8, Math.floor(((p[o + 1] - min[1]) / span) * 9))];
+      if (p[o] < b.x0) b.x0 = p[o]; if (p[o] > b.x1) b.x1 = p[o];
+      if (p[o + 2] < b.z0) b.z0 = p[o + 2]; if (p[o + 2] > b.z1) b.z1 = p[o + 2];
+      b.n++;
+    }
+    buckets.forEach((b, i) => {
+      if (b.n) slices.push({ y: round(min[1] + ((i + 0.5) / 9) * span), x: [round(b.x0), round(b.x1)], z: [round(b.z0), round(b.z1)], n: b.n });
+    });
+    const half = frameHalfExtent(new THREE.Vector3(...min), new THREE.Vector3(...max));
     this.lastObserved = p.slice();
     return {
+      slices,
+      half: round(half),
       vertices: m.vertexCount,
       triangles: m.faceCount,
       bboxMin: round3(min as Vec3),
@@ -461,7 +646,7 @@ export class Studio {
   }
 
   /** Renders the six fixed views into one labelled 3x2 sheet (and a half-size thumbnail). */
-  capture(): Capture {
+  capture(PANEL = 256): Capture {
     const box = new THREE.Box3().setFromBufferAttribute(this.mesh.geometry.attributes.position as THREE.BufferAttribute);
     const half = frameHalfExtent(box.min, box.max);
     const sheet = document.createElement("canvas");
@@ -473,6 +658,7 @@ export class Studio {
 
     const cursorVisible = this.cursor.visible, ghostVisible = this.ghost.visible;
     this.cursor.visible = this.ghost.visible = false;
+    this.captureTarget.setSize(PANEL, PANEL);
     const pixels = new Uint8Array(PANEL * PANEL * 4);
     const image = ctx.createImageData(PANEL, PANEL);
     const panel = document.createElement("canvas");
@@ -492,7 +678,7 @@ export class Studio {
       pctx.putImageData(image, 0, 0);
       const ox = (i % 3) * PANEL, oy = Math.floor(i / 3) * PANEL;
       ctx.drawImage(panel, ox, oy);
-      drawPanelChrome(ctx, ox, oy, view);
+      drawPanelChrome(ctx, ox, oy, view, PANEL, camera, half);
     });
     this.renderer.setRenderTarget(null);
     this.cursor.visible = cursorVisible;
@@ -531,7 +717,7 @@ export class Studio {
 const round = (n: number) => Math.round(n * 1000) / 1000;
 const round3 = (v: Vec3): Vec3 => [round(v[0]), round(v[1]), round(v[2])];
 
-function drawPanelChrome(ctx: CanvasRenderingContext2D, ox: number, oy: number, view: ViewName) {
+function drawPanelChrome(ctx: CanvasRenderingContext2D, ox: number, oy: number, view: ViewName, PANEL: number, camera: THREE.Camera, half: number) {
   ctx.save();
   ctx.strokeStyle = "rgba(22,19,15,0.16)";
   ctx.lineWidth = 1;
@@ -548,6 +734,10 @@ function drawPanelChrome(ctx: CanvasRenderingContext2D, ox: number, oy: number, 
   ctx.fillStyle = "rgba(22,19,15,0.85)";
   ctx.font = "600 13px system-ui, sans-serif";
   ctx.fillText(view.replace("_", " ").toUpperCase(), ox + 6, oy + 16);
+  drawAxisGizmo(ctx, ox + PANEL - 34, oy + 34, camera);
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(22,19,15,0.55)";
+  ctx.fillText(`half ${half.toFixed(2)}`, ox + 6, oy + 30);
   ctx.font = "10px system-ui, sans-serif";
   ctx.fillStyle = "rgba(22,19,15,0.55)";
   for (const f of [0.25, 0.5, 0.75]) {
@@ -555,6 +745,43 @@ function drawPanelChrome(ctx: CanvasRenderingContext2D, ox: number, oy: number, 
     ctx.fillText(String(f), ox + 2, oy + f * PANEL - 2);
   }
   ctx.restore();
+}
+
+/** A 3D axis gizmo (X red, Y green, Z blue) projected through the panel's camera — 3DAxisPrompt-style grounding. */
+function drawAxisGizmo(ctx: CanvasRenderingContext2D, cx: number, cy: number, camera: THREE.Camera) {
+  const axes: [string, THREE.Vector3, string][] = [
+    ["X", new THREE.Vector3(1, 0, 0), "#c0281d"],
+    ["Y", new THREE.Vector3(0, 1, 0), "#2f7d4f"],
+    ["Z", new THREE.Vector3(0, 0, 1), "#2453a8"],
+  ];
+  const view = new THREE.Matrix4().extractRotation(camera.matrixWorldInverse);
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.font = "600 10px system-ui, sans-serif";
+  for (const [label, dir, color] of axes) {
+    const d = dir.clone().applyMatrix4(view);
+    const ex = cx + d.x * 22, ey = cy - d.y * 22;
+    ctx.strokeStyle = ctx.fillStyle = color;
+    if (Math.hypot(d.x, d.y) < 0.2) {
+      // Pointing at or away from the viewer.
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillText(d.z > 0 ? `+${label}·` : `+${label}×`, cx + 7, cy + 12);
+      continue;
+    }
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    ctx.fillText(`+${label}`, ex + (d.x >= 0 ? 2 : -16), ey + (d.y >= 0 ? -2 : 10));
+  }
+  ctx.restore();
+}
+
+function mirrorShape(s: ShapeSpec): ShapeSpec {
+  const m = (v?: Vec3): Vec3 | undefined => (v ? [-v[0], v[1], v[2]] : undefined);
+  return { ...s, center: m(s.center)!, end: m(s.end), axis: m(s.axis), radii: s.radii };
 }
 
 /** Warm clay matcap, generated (no image asset): key light upper-left like the wall's. */

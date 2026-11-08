@@ -175,6 +175,15 @@ h1 { font-size: clamp(3.25rem, 11vw, 8.5rem); font-weight: 400; letter-spacing: 
 .toggle { display: flex; gap: 0.5rem; align-items: center; font-size: 0.8125rem; }
 .toggle input { accent-color: var(--ink); }
 .row { display: flex; gap: 0.3rem; }
+.shapes .mem-label { margin: 0 0 0.35rem; justify-content: space-between; }
+.seg-mini { display: inline-flex; gap: 0.15rem; }
+.seg-mini button, .shape-grid button { border-radius: 999px; padding: 0.2rem 0.5rem; font-size: 0.75rem; opacity: 0.6; }
+.seg-mini button[aria-pressed="true"], .shape-grid button[aria-pressed="true"] { opacity: 1; color: var(--wall); background: var(--ink); }
+.shape-grid { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-bottom: 0.3rem; }
+.shape-grid button:hover, .seg-mini button:hover { opacity: 1; }
+.milestones { margin: 0; padding-inline-start: 1.2rem; font-size: 0.75rem; line-height: 1.45; }
+.milestones li.done { opacity: 0.5; text-decoration: line-through; }
+.intent #assessment { font-size: 0.75rem; color: var(--muted); max-block-size: 5.5rem; overflow-y: auto; }
 .hint { margin: 0; font-size: 0.6875rem; line-height: 1.5; color: var(--muted); }
 
 .agent { grid-column: 3; grid-row: 1; padding: 0.9rem; display: flex; flex-direction: column; gap: 0.7rem; min-block-size: 0; max-block-size: calc(100dvh - 9.5rem); overflow: hidden; }

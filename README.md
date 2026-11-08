@@ -20,17 +20,27 @@ and downloads as GLB / OBJ / STL.
 
 ### Agent harness (`src/worker/agent/`)
 
-- **One request per turn**, `tool_choice: "any"`, parallel tool calls: `sculpt_stroke` (polyline on a named view panel,
-  replayed in the browser by raycasting from that view's camera), `update_intent`, `say`, `set_working_notes`,
-  `rewrite_long_term_memory`, `use_skill`, `wait`. The result of a turn is observed through the next turn's frames.
-- **What it sees:** the current 3×2 contact sheet (front/right/back/left/top/¾, labelled grid) at medium resolution,
-  the recent frames at low resolution, recent strokes (human and agent), geometry summary with change hotspots.
-- **Short-term memory:** a sliding window of the last 3 frames, each captioned with what happened after it,
-  plus working notes, intent, plan and recent dialogue. Replaced every turn.
-- **Long-term memory:** one block capped at 1,200 characters that the agent *rewrites* (consolidates) rather than appends to.
-- **Skills:** small playbooks (blockout, head, creature, hard-surface, cleanup, follow). Only their one-line index is
-  always in context; bodies load when triggered by your words or by `use_skill` (max 2 active).
-- **Modes:** Lead (drives toward the target), Follow (continues/mirrors/cleans beside you), Watch (comments only), Off.
+Built on what has worked for VLM agents editing 3D: SceneCraft's render → critique → fix loop (its biggest ablation),
+LL3M's planner/critic/verifier roles, 3DAxisPrompt's on-image axis overlays, and explicit coordinate mapping (SpatialMind/Think3D).
+
+- **One request per turn**, `tool_choice: "any"`, parallel tool calls. Every turn begins with `assess`: observe each view,
+  **verify last turn's predicted change** against the new frame, rank the gaps to the target, then predict this turn's
+  visible change (checked next turn).
+- **Big moves:** `add_shape` blends sphere / ellipsoid / capsule / box / cylinder / cone / torus into the clay (or carves them out)
+  via a voxel remesh (SDF + marching cubes, like DynaMesh), which also re-evens topology. `sculpt_global` spherize / smooth /
+  inflate / scale. `sculpt_form` is a 3D-addressed Move brush (pull/push/add/carve… at an object-space point).
+- **Detail:** `sculpt_stroke` polylines on a named view panel, replayed by raycasting from that view's camera; `remesh`.
+- **3D grounding:** fixed axes (Y up, model faces +Z, its left is +X), exact panel→object formulas, an axis gizmo and the
+  panel half-extent drawn on every panel, and the form as numbers (nine horizontal slices with X/Z extents).
+- **Doctrine:** primary → secondary → tertiary forms, silhouette (front + right) first, fuse added mass, check every view.
+- **Modes:** **Lead** owns the piece: sets a target + milestones, iterates continuously (up to 24 actions/turn, sharpest sheet,
+  5 recent frames, high thinking, 16K output) until it declares done; the Gate still spaces calls at 12/min.
+  **Follow** extends/mirrors/cleans beside you (10 actions). **Watch** comments only. **Off.**
+- **Memory:** short-term = sliding window of recent multi-view frames with captions + notes, intent, target, critique;
+  long-term = one ≤1,200-char block the agent rewrites. **Skills** (blockout, head, creature, objects, hard-surface, cleanup,
+  follow) load on demand.
+
+You can add mass too: pick a shape in **Add mass**, then click the clay (Add or Carve); **Remesh** evens out stretched areas.
 
 ## Deploy
 

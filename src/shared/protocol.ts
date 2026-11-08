@@ -20,18 +20,24 @@ export const LIMITS = {
   /** Working notes the agent keeps for itself within a session. */
   workingNotes: 6,
   workingNoteChars: 200,
-  /** Recent frames (multi-view sheets) the agent sees besides the current one. */
-  recentFrames: 3,
+  /** Recent frames (multi-view sheets) the agent sees besides the current one, by mode. */
+  recentFrames: 5,
+  recentFramesByMode: { lead: 5, follow: 3, watch: 3 },
   /** Raw stroke summaries per observation. */
   strokesPerObservation: 24,
   chatChars: 600,
-  /** Base64 length caps: ~150 KB for the sheet, ~40 KB for a frame thumbnail. */
-  sheetB64: 200_000,
-  thumbB64: 56_000,
-  /** Actions applied from one agent turn. */
-  actionsPerTurn: 8,
-  pointsPerStroke: 24,
+  /** Base64 length caps: the lead sheet is 960x640, ~250 KB as JPEG. */
+  sheetB64: 640_000,
+  thumbB64: 64_000,
+  /** Actions applied from one agent turn, by mode — lead owns the sculpture and may do a lot. */
+  actionsByMode: { lead: 24, follow: 10, watch: 6 },
+  actionsPerTurn: 24,
+  pointsPerStroke: 48,
+  milestones: 8,
 } as const;
+
+/** Sheet panel size in pixels, by mode: the lead agent gets the sharpest look. */
+export const PANEL_PX = { lead: 320, follow: 256, watch: 256 } as const;
 
 /** One human (or agent) stroke, summarised for intent inference. */
 export interface StrokeSummary {
@@ -62,6 +68,14 @@ export interface GeometrySummary {
   /** Regions (object space) that changed most since the last observation, largest first. */
   hotspots: { center: [number, number, number]; magnitude: number }[];
   symmetryError: number;
+  /**
+   * The form as numbers, so proportions don't have to be read off pixels:
+   * nine horizontal slices from bottom to top, each with its X (width) and
+   * Z (depth) extent and how many vertices fall in it.
+   */
+  slices: { y: number; x: [number, number]; z: [number, number]; n: number }[];
+  /** Panel half-extent of the orthographic views in this capture (model units). */
+  half: number;
 }
 
 export interface Observation {
@@ -99,10 +113,76 @@ export interface StrokeAction {
   strength: number;
   invert: boolean;
   symmetry: boolean;
+  /** Apply the stroke this many times (1-4) for a stronger effect. */
+  passes: number;
   why: string;
 }
 
-export type AgentAction = StrokeAction;
+/**
+ * A form operation addressed directly in 3D object space — the agent's
+ * "Move brush". The centre snaps to the nearest surface point.
+ */
+export const FORM_OPS = ["add", "carve", "pull", "push", "flatten", "smooth", "inflate", "pinch"] as const;
+export type FormOp = (typeof FORM_OPS)[number];
+
+export interface FormAction {
+  kind: "form";
+  id: string;
+  op: FormOp;
+  center: [number, number, number];
+  radius: number;
+  /** Model units of displacement at the centre (pull/push/add/carve), or 0..1 strength for the others. */
+  amount: number;
+  /** For pull/push: the direction to move the surface, object space (normalised on apply). */
+  direction?: [number, number, number];
+  symmetry: boolean;
+  why: string;
+}
+
+/** Whole-model operations for the big early moves (a cube becoming an egg). */
+export const GLOBAL_OPS = ["spherize", "smooth", "inflate", "scale"] as const;
+export type GlobalOp = (typeof GLOBAL_OPS)[number];
+
+export interface GlobalAction {
+  kind: "global";
+  id: string;
+  op: GlobalOp;
+  /** 0..1 blend for spherize/smooth/inflate. */
+  amount: number;
+  /** For scale: per-axis factors (0.5..2). */
+  scale?: [number, number, number];
+  why: string;
+}
+
+/** Primitives that can be blended into (or carved out of) the clay via a voxel remesh. */
+export const SHAPES = ["sphere", "ellipsoid", "capsule", "box", "cylinder", "cone", "torus"] as const;
+export type ShapeKind = (typeof SHAPES)[number];
+
+export interface ShapeAction {
+  kind: "shape";
+  id: string;
+  shape: ShapeKind;
+  mode: "add" | "subtract";
+  center: [number, number, number];
+  radius: number;
+  radii?: [number, number, number];
+  end?: [number, number, number];
+  axis?: [number, number, number];
+  minor?: number;
+  blend: number;
+  /** Also place the X-mirrored copy (skipped when the centre is on x = 0). */
+  symmetry: boolean;
+  why: string;
+}
+
+/** Rebuild the surface with even topology (no new mass). */
+export interface RemeshAction {
+  kind: "remesh";
+  id: string;
+  why: string;
+}
+
+export type AgentAction = StrokeAction | FormAction | GlobalAction | ShapeAction | RemeshAction;
 
 export interface ActionResult {
   id: string;
@@ -135,6 +215,13 @@ export interface TurnResponse {
   say?: string;
   intent?: { summary: string; confidence: number; target?: string };
   plan?: string[];
+  /** Lead mode: the sculpture's target and milestone checklist. */
+  target?: string;
+  milestones?: { text: string; done: boolean }[];
+  /** The agent's own critique of this frame (shown in the UI, fed back next turn). */
+  assessment?: string;
+  /** Lead mode: the agent believes the sculpture is finished. */
+  done?: boolean;
   actions: AgentAction[];
   activeSkills: string[];
   memory: { longTerm: string; notes: string[] };

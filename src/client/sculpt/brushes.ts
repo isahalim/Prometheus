@@ -7,7 +7,7 @@
  * fraction of a millisecond, simpler and more robust than keeping a spatial
  * index in sync with a moving surface.
  */
-import type { BrushName } from "../../shared/protocol.ts";
+import type { BrushName, FormOp } from "../../shared/protocol.ts";
 import type { SculptMesh } from "./mesh.ts";
 
 export type Vec3 = [number, number, number];
@@ -163,3 +163,80 @@ export class Grab {
 }
 
 export const mirrorX = (v: Vec3): Vec3 => [-v[0], v[1], v[2]];
+
+// ---------- the agent's 3D-addressed operations ----------
+
+
+/**
+ * One form operation at a 3D surface point. `amount` is model units of
+ * displacement at the centre for add/carve/pull/push, and 0..1 intensity for
+ * the rest (applied as repeated full-strength dabs).
+ */
+export function applyForm(mesh: SculptMesh, op: FormOp, center: Vec3, radius: number, amount: number, direction?: Vec3): number[] {
+  if (op === "flatten" || op === "smooth" || op === "inflate" || op === "pinch") {
+    const passes = Math.max(1, Math.round(amount * 6));
+    const touched = new Set<number>();
+    for (let i = 0; i < passes; i++) for (const v of applyDab(mesh, { brush: op, center, radius, strength: 1, invert: false })) touched.add(v);
+    return [...touched];
+  }
+  const fp = footprint(mesh, center, radius);
+  let d: Vec3 = fp.normal;
+  if ((op === "pull" || op === "push") && direction) {
+    const l = Math.hypot(...direction) || 1;
+    d = [direction[0] / l, direction[1] / l, direction[2] / l];
+  }
+  const sign = op === "carve" || op === "push" ? -1 : 1;
+  const p = mesh.positions;
+  fp.indices.forEach((v, k) => {
+    const w = fp.weights[k] * amount * sign;
+    p[v * 3] += d[0] * w; p[v * 3 + 1] += d[1] * w; p[v * 3 + 2] += d[2] * w;
+  });
+  return fp.indices;
+}
+
+/** Target positions for a whole-model blend (spherize / inflate / scale), to be eased toward. */
+export function globalTarget(mesh: SculptMesh, op: "spherize" | "inflate" | "scale", amount: number, scale?: Vec3): Float32Array {
+  const p = mesh.positions, n = mesh.normals;
+  const out = p.slice();
+  let cx = 0, cy = 0, cz = 0;
+  for (let v = 0; v < mesh.vertexCount; v++) { cx += p[v * 3]; cy += p[v * 3 + 1]; cz += p[v * 3 + 2]; }
+  cx /= mesh.vertexCount; cy /= mesh.vertexCount; cz /= mesh.vertexCount;
+  let mean = 0;
+  for (let v = 0; v < mesh.vertexCount; v++) mean += Math.hypot(p[v * 3] - cx, p[v * 3 + 1] - cy, p[v * 3 + 2] - cz);
+  mean /= mesh.vertexCount;
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    const o = v * 3;
+    if (op === "spherize") {
+      const dx = p[o] - cx, dy = p[o + 1] - cy, dz = p[o + 2] - cz;
+      const l = Math.hypot(dx, dy, dz) || 1;
+      out[o] = p[o] + (cx + (dx / l) * mean - p[o]) * amount;
+      out[o + 1] = p[o + 1] + (cy + (dy / l) * mean - p[o + 1]) * amount;
+      out[o + 2] = p[o + 2] + (cz + (dz / l) * mean - p[o + 2]) * amount;
+    } else if (op === "inflate") {
+      const k = amount * 0.25 * mean;
+      out[o] = p[o] + n[o] * k; out[o + 1] = p[o + 1] + n[o + 1] * k; out[o + 2] = p[o + 2] + n[o + 2] * k;
+    } else {
+      const s = scale ?? [1, 1, 1];
+      out[o] = p[o] * s[0]; out[o + 1] = p[o + 1] * s[1]; out[o + 2] = p[o + 2] * s[2];
+    }
+  }
+  return out;
+}
+
+/** Whole-model Laplacian smoothing, `iterations` passes at half strength. */
+export function smoothAll(mesh: SculptMesh, iterations: number) {
+  const p = mesh.positions;
+  const tmp = new Float32Array(p.length);
+  for (let it = 0; it < iterations; it++) {
+    for (let v = 0; v < mesh.vertexCount; v++) {
+      const a = mesh.neighborStart[v], b = mesh.neighborStart[v + 1];
+      let x = 0, y = 0, z = 0;
+      for (let j = a; j < b; j++) { const q = mesh.neighbors[j] * 3; x += p[q]; y += p[q + 1]; z += p[q + 2]; }
+      const c = b - a || 1;
+      tmp[v * 3] = p[v * 3] + (x / c - p[v * 3]) * 0.5;
+      tmp[v * 3 + 1] = p[v * 3 + 1] + (y / c - p[v * 3 + 1]) * 0.5;
+      tmp[v * 3 + 2] = p[v * 3 + 2] + (z / c - p[v * 3 + 2]) * 0.5;
+    }
+    p.set(tmp);
+  }
+}

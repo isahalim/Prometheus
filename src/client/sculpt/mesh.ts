@@ -30,8 +30,13 @@ export class SculptMesh {
   private dirty = new Set<number>();
   private topologyDirty = false;
 
-  constructor(subdivisions = CUBE_SUBDIVISIONS) {
+  /** The starting cube: Blender's default, welded and subdivided. */
+  static cube(subdivisions = CUBE_SUBDIVISIONS): SculptMesh {
     const { positions, index } = buildCube(subdivisions);
+    return new SculptMesh(positions, index);
+  }
+
+  constructor(positions: Float32Array, index: Uint32Array) {
     this.positions = positions;
     this.rest = positions.slice();
     this.vertexCount = positions.length / 3;
@@ -54,13 +59,7 @@ export class SculptMesh {
     this.faceCount = this.index.length / 3;
     this.faceNormals = new Float32Array(this.faceCount * 3);
 
-    const lattice = (x: number) => Math.round(((x + 1) / 2) * subdivisions);
-    const keyOf = (o: number, flip: boolean) =>
-      ((flip ? subdivisions - lattice(positions[o]) : lattice(positions[o])) * (subdivisions + 1) + lattice(positions[o + 1])) * (subdivisions + 1) + lattice(positions[o + 2]);
-    const byKey = new Map<number, number>();
-    for (let v = 0; v < this.vertexCount; v++) byKey.set(keyOf(v * 3, false), v);
-    this.mirror = new Uint32Array(this.vertexCount);
-    for (let v = 0; v < this.vertexCount; v++) this.mirror[v] = byKey.get(keyOf(v * 3, true)) ?? v;
+    this.mirror = mirrorMap(positions);
 
     // vertex -> faces
     const idx = this.index;
@@ -156,6 +155,34 @@ export class SculptMesh {
     for (let f = 0; f < this.faceCount; f++) this.computeFaceNormal(f);
     for (let v = 0; v < this.vertexCount; v++) this.computeVertexNormal(v);
   }
+}
+
+/** For each vertex, the vertex nearest its X-mirrored position (itself if none is close). */
+function mirrorMap(positions: Float32Array): Uint32Array {
+  const n = positions.length / 3;
+  const cell = 0.02;
+  const key = (x: number, y: number, z: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
+  const grid = new Map<string, number[]>();
+  for (let v = 0; v < n; v++) {
+    const k = key(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
+    const list = grid.get(k);
+    if (list) list.push(v);
+    else grid.set(k, [v]);
+  }
+  const out = new Uint32Array(n);
+  for (let v = 0; v < n; v++) {
+    const x = -positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+    const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
+    let best = v, bestD = cell * cell;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      for (const u of grid.get(`${cx + dx},${cy + dy},${cz + dz}`) ?? []) {
+        const d = (positions[u * 3] - x) ** 2 + (positions[u * 3 + 1] - y) ** 2 + (positions[u * 3 + 2] - z) ** 2;
+        if (d < bestD) { bestD = d; best = u; }
+      }
+    }
+    out[v] = best;
+  }
+  return out;
 }
 
 /** Six N x N face grids on the cube [-1,1]^3, welded on integer lattice keys, wound outward. */

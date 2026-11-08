@@ -20,13 +20,14 @@ import type { GateResult } from "./gate.ts";
 
 const IDLE_WIPE_MS = 20 * 60 * 1000;
 /** Minimum spacing of ambient (un-asked) turns per session, by mode. */
-const AMBIENT_INTERVAL_MS = { lead: 12_000, follow: 20_000, watch: 40_000 } as const;
+/** Lead iterates continuously; the Gate still spaces every call evenly across the minute. */
+const AMBIENT_INTERVAL_MS = { lead: 2_000, follow: 20_000, watch: 40_000 } as const;
 
 export class Atelier extends DurableObject<AppEnv> {
   private state: WorkingState | null = null;
 
   private async load(): Promise<WorkingState> {
-    if (!this.state) this.state = (await this.ctx.storage.get<WorkingState>("state")) ?? emptyState(Date.now());
+    if (!this.state) this.state = { ...emptyState(Date.now()), ...((await this.ctx.storage.get<WorkingState>("state")) ?? {}) };
     return this.state;
   }
 
@@ -69,7 +70,8 @@ export class Atelier extends DurableObject<AppEnv> {
 
     const longTerm = await studio.getLongTermMemory();
     const { body, estTokens } = buildRequestBody(req, state, longTerm, started);
-    const result: GateResult = await gate.generate({ priority: req.trigger === "human" ? "human" : "ambient", body, estTokens });
+    const priority = req.trigger === "human" ? "human" : req.mode === "lead" ? "lead" : "ambient";
+    const result: GateResult = await gate.generate({ priority, body, estTokens });
 
     if (req.message) pushDialogue(state, "human", req.message.slice(0, LIMITS.chatChars));
 
@@ -82,6 +84,14 @@ export class Atelier extends DurableObject<AppEnv> {
     const parsed = parseSteps(success.data.steps ?? [], req.mode, req.trigger === "human");
 
     if (parsed.intent) state.intent = parsed.intent;
+    if (parsed.target) {
+      state.target = parsed.target.description;
+      if (parsed.target.milestones.length) state.milestones = parsed.target.milestones;
+    }
+    if (parsed.assessment) state.assessment = parsed.assessment;
+    state.expected = parsed.expected ?? (parsed.actions.length ? undefined : state.expected);
+    if (parsed.stage) state.stage = parsed.stage;
+    state.done = Boolean(parsed.done);
     if (parsed.plan) state.plan = parsed.plan;
     if (parsed.notes) state.notes = parsed.notes;
     for (const name of parsed.skills) {
@@ -105,6 +115,10 @@ export class Atelier extends DurableObject<AppEnv> {
       say: parsed.say,
       intent: state.intent,
       plan: state.plan,
+      target: state.target,
+      milestones: state.milestones,
+      assessment: state.assessment,
+      done: state.done,
       actions: parsed.actions,
       activeSkills: state.activeSkills,
       memory: { longTerm: memory, notes: state.notes },
@@ -131,7 +145,7 @@ function caption(strokes: StrokeSummary[], agentStrokes: number, said: string | 
   for (const s of human) byBrush.set(s.brush, (byBrush.get(s.brush) ?? 0) + 1);
   const parts = [
     human.length ? `human made ${[...byBrush].map(([b, c]) => `${c} ${b}`).join(", ")}` : "human idle",
-    agentStrokes ? `you then made ${agentStrokes} stroke(s)` : waited ? `you waited (${waited})` : "you did not sculpt",
+    agentStrokes ? `you then made ${agentStrokes} action(s)` : waited ? `you waited (${waited})` : "you did not sculpt",
   ];
   if (said) parts.push(`you said "${said.slice(0, 80)}"`);
   return parts.join("; ");

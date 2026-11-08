@@ -54,11 +54,16 @@
           <label class="slider">Radius <input type="range" id="radius" min="0.03" max="0.7" step="0.01" value="0.22" /><output id="radius-out">0.22</output></label>
           <label class="slider">Strength <input type="range" id="strength" min="0.05" max="1" step="0.01" value="0.5" /><output id="strength-out">0.50</output></label>
           <label class="toggle"><input type="checkbox" id="symmetry" checked /> X symmetry</label>
+          <div class="shapes">
+            <p class="mem-label">Add mass <span class="seg-mini"><button type="button" class="clicky" id="shape-add" aria-pressed="true">Add</button><button type="button" class="clicky" id="shape-carve" aria-pressed="false">Carve</button></span></p>
+            <div class="shape-grid" id="shapes"></div>
+            <button type="button" class="ghost clicky" id="remesh" title="Voxel remesh: even out stretched topology">Remesh</button>
+          </div>
           <div class="row">
             <button type="button" class="ghost clicky" id="undo" disabled title="Ctrl+Z">Undo</button>
             <button type="button" class="ghost clicky" id="redo" disabled title="Ctrl+Shift+Z">Redo</button>
           </div>
-          <p class="hint">Drag the clay to sculpt · drag empty space to orbit · right-drag pans · Ctrl inverts · Shift smooths · [ ] radius</p>
+          <p class="hint">Drag the clay to sculpt · drag empty space to orbit · right-drag pans · Ctrl inverts · Shift smooths · [ ] radius · pick a shape, then click the clay to add it</p>
         </aside>
 
         <aside class="agent glass-md" aria-label="Agent">
@@ -74,8 +79,11 @@
           </div>
           <dl class="intent">
             <dt>Reading</dt><dd id="intent">Waiting for your first strokes.</dd>
+            <dt>Target</dt><dd id="target">—</dd>
             <dt>Plan</dt><dd id="plan">—</dd>
+            <dt>Critique</dt><dd id="assessment">—</dd>
           </dl>
+          <ol class="milestones" id="milestones" hidden></ol>
           <ol class="chat" id="chat" aria-live="polite"></ol>
           <form class="ask" id="ask">
             <input class="field glass-sm" id="message" maxlength="600" placeholder="Tell the agent what you're making…" autocomplete="off" />
