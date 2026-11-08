@@ -78,7 +78,6 @@ Thinking and memory:
 - assess (CALL FIRST, EVERY TURN): your structured critique and prediction. See protocol below.
 - set_target: the finished sculpture and its milestone checklist (mark milestones done as you go).
 - update_intent: your reading of what the HUMAN is making. say: 1-2 sentences to the human, like a studio partner. Skip it if nothing to say.
-- set_working_notes / rewrite_long_term_memory (whole block, <=${LIMITS.longTermChars} chars, consolidate, only durable facts about the human).
 - use_skill: load a playbook. declare_done: the piece is finished (lead mode). wait: do nothing this turn.
 
 === REASONING PROTOCOL (think step by step, then act) ===
@@ -242,18 +241,6 @@ export const TOOLS = [
   { type: "function", name: "say", description: "A short message to the human.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
   {
     type: "function",
-    name: "set_working_notes",
-    description: "Replace the session scratchpad.",
-    parameters: { type: "object", properties: { notes: { type: "array", items: { type: "string" } } }, required: ["notes"] },
-  },
-  {
-    type: "function",
-    name: "rewrite_long_term_memory",
-    description: "Replace the entire long-term memory with a consolidated version.",
-    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-  },
-  {
-    type: "function",
     name: "use_skill",
     description: "Load a skill playbook for the rest of the session.",
     parameters: { type: "object", properties: { name: { type: "string", enum: SKILLS.map((s) => s.name) } }, required: ["name"] },
@@ -269,7 +256,6 @@ export const TOOLS = [
 
 export interface WorkingState {
   startedAt: number;
-  notes: string[];
   intent?: { summary: string; confidence: number; target?: string };
   plan: string[];
   activeSkills: string[];
@@ -288,7 +274,7 @@ export interface WorkingState {
 }
 
 export function emptyState(now: number): WorkingState {
-  return { startedAt: now, notes: [], plan: [], activeSkills: [], frames: [], dialogue: [], lastAmbientAt: 0, turns: 0, milestones: [] };
+  return { startedAt: now, plan: [], activeSkills: [], frames: [], dialogue: [], lastAmbientAt: 0, turns: 0, milestones: [] };
 }
 
 /** Per-mode budgets: lead spends tokens freely (sharper sheet, more frames, deep thinking, long output). */
@@ -302,7 +288,7 @@ const f2 = (n: number) => (Number.isFinite(n) ? n.toFixed(2) : "?");
 const v3 = (v: [number, number, number]) => `(${f2(v[0])}, ${f2(v[1])}, ${f2(v[2])})`;
 
 /** The text part of the turn: everything except the images. */
-export function contextText(req: TurnRequest, state: WorkingState, longTerm: string, skills: Skill[], now: number): string {
+export function contextText(req: TurnRequest, state: WorkingState, skills: Skill[], now: number): string {
   const o = req.observation;
   const g = o.geometry;
   const strokes = o.strokes.slice(-LIMITS.strokesPerObservation);
@@ -342,19 +328,17 @@ export function contextText(req: TurnRequest, state: WorkingState, longTerm: str
   lines.push(state.intent ? `- human intent: ${state.intent.summary} (confidence ${f2(state.intent.confidence)}${state.intent.target ? `, target: ${state.intent.target}` : ""})` : "- human intent: unknown yet");
   if (state.plan.length) lines.push(`- plan: ${state.plan.join(" -> ")}`);
   if (state.assessment) lines.push(`- your last critique: ${state.assessment}`);
-  for (const n of state.notes) lines.push(`- note: ${n}`);
   for (const d of state.dialogue.slice(-6)) lines.push(`- ${d.who}: ${d.text}`);
 
-  lines.push(`\nLONG-TERM MEMORY (${longTerm.length}/${LIMITS.longTermChars} chars):\n${longTerm || "(empty)"}`);
   lines.push(`\nSKILLS AVAILABLE (call use_skill to load):\n${skillIndex()}`);
   for (const s of skills) lines.push(`\nLOADED SKILL — ${s.body}`);
   return lines.join("\n");
 }
 
-export function buildRequestBody(req: TurnRequest, state: WorkingState, longTerm: string, now: number) {
+export function buildRequestBody(req: TurnRequest, state: WorkingState, now: number) {
   const config = MODE_CONFIG[req.mode];
   const skills = selectSkills(state.activeSkills, req.message);
-  const content: Record<string, unknown>[] = [{ type: "text", text: contextText(req, state, longTerm, skills, now) }];
+  const content: Record<string, unknown>[] = [{ type: "text", text: contextText(req, state, skills, now) }];
   const frames = state.frames.slice(-config.frames);
   if (frames.length) {
     content.push({ type: "text", text: `RECENT FRAMES (oldest first; same 3x2 layout):` });
@@ -384,8 +368,6 @@ export interface ParsedTurn {
   say?: string;
   intent?: { summary: string; confidence: number; target?: string };
   plan?: string[];
-  notes?: string[];
-  longTerm?: string;
   skills: string[];
   waited?: string;
   assessment?: string;
@@ -515,12 +497,6 @@ export function parseSteps(steps: InteractionStep[], mode: AgentMode, humanAsked
         break;
       case "say":
         if (str(a.text, 400)) sayParts.push(str(a.text, 400));
-        break;
-      case "set_working_notes":
-        if (Array.isArray(a.notes)) out.notes = a.notes.slice(0, LIMITS.workingNotes).map((x) => str(x, LIMITS.workingNoteChars)).filter(Boolean);
-        break;
-      case "rewrite_long_term_memory":
-        if (typeof a.text === "string") out.longTerm = a.text;
         break;
       case "use_skill":
         if (typeof a.name === "string" && SKILLS.some((s) => s.name === a.name)) out.skills.push(a.name);

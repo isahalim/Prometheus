@@ -14,7 +14,7 @@ and downloads as GLB / OBJ / STL.
 | Studio (browser) | `src/client/sculpt/` | three.js + three-mesh-bvh. Welded 80×80-per-face cube, Blender-style brushes (draw, clay, inflate, smooth, flatten, pinch, crease, grab), X symmetry, undo, export. Written fresh, not ported from Blender (GPL). |
 | Wall (browser) | `src/client/wall/` | vgpu/WebGPU plaster wall ported from omnidynamics (same material bake, window-light mask, light direction), plus the sculpture's cast shadow and an ember glow that breathes while the agent thinks and flares while it sculpts. CSS wall fallback without WebGPU. |
 | Worker | `src/worker/index.ts` | Passkey auth + `/api/*`. Static assets served directly. |
-| `Studio` DO (singleton) | `src/worker/do/studio.ts` | Passkeys (same enrollment-token + WebAuthn flow as mythosengine, `ENROLLMENT_TOKEN` = mythosengine's `CONSOLE_ENROLLMENT_TOKEN`) and the long-term memory. |
+| `Studio` DO (singleton) | `src/worker/do/studio.ts` | Passkeys (same enrollment-token + WebAuthn flow as mythosengine; its own `ENROLLMENT_TOKEN`). |
 | `Gate` DO (singleton) | `src/worker/do/gate.ts` | The **only** Gemini caller. Evenly spaced slots (12 rpm target ⇒ one call every 5 s, under the 15 rpm limit), rolling-minute TPM check against 250K, 500 RPD with a reserve for human asks, Pacific-midnight reset, honours upstream 429 retry delays. |
 | `Atelier` DO (per tab) | `src/worker/do/atelier.ts` | The agent harness for one session: short-term memory, then deletes itself 20 min after the last turn (or immediately when the tab closes). |
 
@@ -36,11 +36,20 @@ LL3M's planner/critic/verifier roles, 3DAxisPrompt's on-image axis overlays, and
 - **Modes:** **Lead** owns the piece: sets a target + milestones, iterates continuously (up to 24 actions/turn, sharpest sheet,
   5 recent frames, high thinking, 16K output) until it declares done; the Gate still spaces calls at 12/min.
   **Follow** extends/mirrors/cleans beside you (10 actions). **Watch** comments only. **Off.**
-- **Memory:** short-term = sliding window of recent multi-view frames with captions + notes, intent, target, critique;
-  long-term = one ≤1,200-char block the agent rewrites. **Skills** (blockout, head, creature, objects, hard-surface, cleanup,
-  follow) load on demand.
+- **Memory:** short-term only — a sliding window of recent multi-view frames (3, or 5 in Lead) each captioned with what
+  happened after it, plus the session's reading, target + milestones, plan and last critique/prediction. (A long-term memory
+  block and working notes were tried and removed: the agent almost never used them.) **Skills** (blockout, head, creature,
+  objects, hard-surface, cleanup, follow) load on demand.
 
 You can add mass too: pick a shape in **Add mass**, then click the clay (Add or Carve); **Remesh** evens out stretched areas.
+
+### Touch
+
+Pointer Events with every active pointer cached (MDN multi-touch guidance), `touch-action: none` only on the canvas, and
+gestures after Nomad Sculpt / tablet sculpting apps: one finger on the clay sculpts, one finger off it orbits; two fingers
+pinch-zoom and pan; two-finger tap undo; three-finger tap redo; double-tap empty space resets the view. A second finger
+landing within 180 ms of a stroke cancels that stroke, so starting a pinch never leaves a dent. Apple Pencil / pen pressure
+scales strength. With any coarse pointer present, controls grow to ~44 px targets.
 
 ## Deploy
 

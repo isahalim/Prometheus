@@ -7,7 +7,9 @@
     <meta name="robots" content="noindex, nofollow" />
     <meta name="description" content="Prometheus — live pair sculpting with an AI agent. Start from a cube; sculpt together." />
     <title>Prometheus</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-96.png?v=2" type="image/png" sizes="96x96" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" />
     <link rel="preload" href="/fonts/Camaufalge.woff2" as="font" type="font/woff2" crossorigin />
   </head>
   <body>
@@ -17,9 +19,10 @@
     <div class="page">
       <header class="top">
         <a class="brand clicky" href="/">
-          <svg class="mark" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="9.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <!-- The OmniDynamics monogram (omnidynamics src/components/Logo.astro): a ring with a stem a third of the way across. -->
+          <svg class="mark" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="9.5" stroke-linecap="round" role="img" aria-label="OmniDynamics">
             <circle cx="50" cy="50" r="45" />
-            <path d="M50 24c9 12 15 22 15 32a15 15 0 0 1-30 0c0-10 6-20 15-32z" />
+            <line x1="28.4" y1="10.52" x2="28.4" y2="89.48" />
           </svg>
           <span class="wordmark">Prometheus</span>
         </a>
@@ -63,7 +66,8 @@
             <button type="button" class="ghost clicky" id="undo" disabled title="Ctrl+Z">Undo</button>
             <button type="button" class="ghost clicky" id="redo" disabled title="Ctrl+Shift+Z">Redo</button>
           </div>
-          <p class="hint">Drag the clay to sculpt · drag empty space to orbit · right-drag pans · Ctrl inverts · Shift smooths · [ ] radius · pick a shape, then click the clay to add it</p>
+          <p class="hint mouse-hint">Drag the clay to sculpt · drag empty space to orbit · right-drag pans · Ctrl inverts · Shift smooths · [ ] radius · pick a shape, then click the clay to add it</p>
+          <p class="hint touch-hint">Touch: one finger on the clay sculpts, on empty space orbits · two fingers pinch to zoom and drag to pan · two-finger tap undo · three-finger tap redo · double-tap empty space resets the view · pick a shape, then tap the clay</p>
         </aside>
 
         <aside class="agent glass-md" aria-label="Agent">
@@ -90,15 +94,9 @@
             <button type="submit" class="solid clicky">Send</button>
           </form>
           <details class="memory">
-            <summary>Memory</summary>
-            <p class="mem-label">Short-term · recent frames</p>
+            <summary>Short-term memory</summary>
+            <p class="mem-label">Recent frames the agent compares against (oldest → newest)</p>
             <div class="frames" id="frames"></div>
-            <p class="mem-label">Working notes</p>
-            <ul class="notes" id="notes"><li>—</li></ul>
-            <p class="mem-label">Long-term <span id="lt-count"></span> <button type="button" class="quiet clicky" id="lt-clear">clear</button></p>
-            <pre class="longterm" id="longterm">—</pre>
-            <p class="mem-label">Skills loaded</p>
-            <p class="skills" id="skills">—</p>
           </details>
         </aside>
 

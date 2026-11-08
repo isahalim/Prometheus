@@ -37,6 +37,10 @@ export interface Capture {
 }
 
 const UNDO_DEPTH = 40;
+const STROKE_GRACE_MS = 180;
+const TAP_MS = 280;
+const TAP_SLOP_PX = 12;
+const DOUBLE_TAP_MS = 320;
 const MAX_PANEL = 320;
 const CLAY = new THREE.Color("#b8a693");
 const SHEET_BG = "#d6d0c6";
@@ -113,7 +117,8 @@ export class Studio {
     canvas.addEventListener("pointermove", this.onPointerMove);
     canvas.addEventListener("pointerup", this.onPointerUp);
     canvas.addEventListener("pointercancel", this.onPointerUp);
-    canvas.addEventListener("pointerleave", () => (this.cursor.visible = false));
+    canvas.addEventListener("pointerleave", (e) => e.pointerType !== "touch" && (this.cursor.visible = false));
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault()); // long-press must not open a menu over the clay
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
@@ -173,19 +178,35 @@ export class Studio {
   }
 
   private onPointerDown = (event: PointerEvent) => {
+    // Touch is handled entirely by the gesture layer below, never by OrbitControls
+    // (stopImmediatePropagation keeps its listener, registered after this one, out).
+    if (event.pointerType === "touch") {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      this.touchDown(event);
+      return;
+    }
     if (event.button !== 0 || this.stroking) return;
     const hit = this.pick(event);
     if (!hit) return; // empty space: OrbitControls orbits
-    if (this.armed) {
-      const { shape, mode, onPlaced } = this.armed;
-      this.armed = null;
-      this.canvas.style.cursor = "";
-      this.placeCursor(hit.point, hit.face?.normal ?? null);
-      onPlaced(this.placeShape(shape, mode));
-      return;
-    }
+    if (this.placeArmed(hit)) return;
     this.controls.enabled = false;
-    this.canvas.setPointerCapture(event.pointerId);
+    this.beginStroke(event, hit);
+  };
+
+  /** If a shape is armed, places it at this hit and reports true. */
+  private placeArmed(hit: THREE.Intersection): boolean {
+    if (!this.armed) return false;
+    const { shape, mode, onPlaced } = this.armed;
+    this.armed = null;
+    this.canvas.style.cursor = "";
+    this.placeCursor(hit.point, hit.face?.normal ?? null);
+    onPlaced(this.placeShape(shape, mode));
+    return true;
+  }
+
+  private beginStroke(event: PointerEvent, hit: THREE.Intersection) {
+    this.capturePointer(event.pointerId);
     this.pushUndo();
     const brush: BrushName = event.shiftKey ? "smooth" : this.settings.brush;
     const invert = event.ctrlKey || event.metaKey || event.altKey;
@@ -204,9 +225,21 @@ export class Studio {
       this.stroking.dabs = 1;
     }
     this.lastHumanActivity = performance.now();
-  };
+  }
 
   private onPointerMove = (event: PointerEvent) => {
+    if (event.pointerType === "touch") {
+      this.touchMove(event);
+      return;
+    }
+    this.continueStroke(event);
+    if (this.stroking) return;
+    const hit = this.pick(event);
+    if (hit) this.placeCursor(hit.point, hit.face?.normal ?? null);
+    this.cursor.visible = hit !== null;
+  };
+
+  private continueStroke(event: PointerEvent) {
     const s = this.stroking;
     if (s && event.pointerId === s.pointerId) {
       this.lastHumanActivity = performance.now();
@@ -242,14 +275,18 @@ export class Studio {
       }
       s.last.addScaledVector(segment, (steps * spacing) / length);
       this.placeCursor(hit.point, hit.face?.normal ?? null);
-      return;
     }
-    const hit = this.pick(event);
-    if (hit) this.placeCursor(hit.point, hit.face?.normal ?? null);
-    this.cursor.visible = hit !== null;
-  };
+  }
 
   private onPointerUp = (event: PointerEvent) => {
+    if (event.pointerType === "touch") {
+      this.touchUp(event);
+      return;
+    }
+    this.endStroke(event);
+  };
+
+  private endStroke(event: PointerEvent) {
     const s = this.stroking;
     if (!s || event.pointerId !== s.pointerId) return;
     this.stroking = null;
@@ -270,7 +307,173 @@ export class Studio {
       t: round((performance.now() - this.t0) / 1000),
     });
     this.lastHumanActivity = performance.now();
-  };
+  }
+
+  /** Abandons the current stroke as if it never happened (a second finger landed: it was a gesture). */
+  private cancelStroke() {
+    const s = this.stroking;
+    if (!s) return;
+    this.stroking = null;
+    if (this.canvas.hasPointerCapture(s.pointerId)) this.canvas.releasePointerCapture(s.pointerId);
+    const before = this.undo.pop();
+    if (before) this.apply(before);
+    this.onHistory(this.undo.length > 0, this.redo.length > 0);
+    this.cursor.visible = false;
+  }
+
+  // ---------- touch ----------
+  //
+  // After Nomad Sculpt / ZBrush for iPad conventions, and MDN's multi-touch
+  // guidance (cache every active pointer; handle pointercancel; touch-action
+  // none only on the canvas):
+  //   1 finger on the clay ......... sculpt with the current brush
+  //   1 finger on empty space ...... orbit
+  //   2 fingers .................... pinch to zoom, drag to pan
+  //   2-finger tap ................. undo        3-finger tap ... redo
+  //   double-tap empty space ....... reset the view
+  // A second finger arriving within STROKE_GRACE_MS of a stroke cancels that
+  // stroke, so starting a pinch never leaves a dent.
+
+  /** Pointer capture can throw for a pointer that has already gone (or a synthetic one); losing it is harmless. */
+  private capturePointer(pointerId: number) {
+    try {
+      this.canvas.setPointerCapture(pointerId);
+    } catch {
+      /* not capturable: the stroke still works while the pointer stays over the canvas */
+    }
+  }
+
+  /** Reports a touch gesture that did something (for a toast). */
+  onGesture: (name: string) => void = () => {};
+  private readonly touches = new Map<number, { x: number; y: number; sx: number; sy: number }>();
+  private gesture: null | { start: number; maxTouches: number; moved: boolean; mode: "idle" | "sculpt" | "orbit" | "nav"; strokeAt: number; prevDist: number; prevMid: [number, number] } = null;
+  private lastTap = { t: 0, x: 0, y: 0 };
+
+  private touchDown(event: PointerEvent) {
+    this.capturePointer(event.pointerId);
+    this.touches.set(event.pointerId, { x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY });
+    const now = performance.now();
+    if (this.touches.size === 1) {
+      this.gesture = { start: now, maxTouches: 1, moved: false, mode: "idle", strokeAt: 0, prevDist: 0, prevMid: [0, 0] };
+      const hit = this.pick(event);
+      if (hit && this.placeArmed(hit)) return;
+      if (hit) {
+        this.beginStroke(event, hit);
+        this.placeCursor(hit.point, hit.face?.normal ?? null);
+        this.gesture.mode = "sculpt";
+        this.gesture.strokeAt = now;
+      } else {
+        this.gesture.mode = "orbit";
+      }
+      return;
+    }
+    const g = this.gesture;
+    if (!g) return;
+    g.maxTouches = Math.max(g.maxTouches, this.touches.size);
+    if (g.mode === "sculpt") {
+      if (now - g.strokeAt < STROKE_GRACE_MS || (this.stroking?.dabs ?? 0) < 4) this.cancelStroke();
+      else this.finishTouchStroke();
+    }
+    g.mode = "nav";
+    const [a, b] = [...this.touches.values()];
+    g.prevDist = Math.hypot(a.x - b.x, a.y - b.y);
+    g.prevMid = [(a.x + b.x) / 2, (a.y + b.y) / 2];
+  }
+
+  private touchMove(event: PointerEvent) {
+    const t = this.touches.get(event.pointerId);
+    const g = this.gesture;
+    if (!t || !g) return;
+    const dx = event.clientX - t.x, dy = event.clientY - t.y;
+    t.x = event.clientX;
+    t.y = event.clientY;
+    if (Math.hypot(t.x - t.sx, t.y - t.sy) > TAP_SLOP_PX) g.moved = true;
+    if (g.mode === "sculpt" && this.stroking?.pointerId === event.pointerId) {
+      this.continueStroke(event);
+    } else if (g.mode === "orbit" && this.touches.size === 1) {
+      this.orbitBy(dx, dy);
+    } else if (g.mode === "nav" && this.touches.size >= 2) {
+      const [a, b] = [...this.touches.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const mid: [number, number] = [(a.x + b.x) / 2, (a.y + b.y) / 2];
+      if (g.prevDist > 0 && dist > 0) this.dollyBy(g.prevDist / dist);
+      this.panBy(mid[0] - g.prevMid[0], mid[1] - g.prevMid[1]);
+      g.prevDist = dist;
+      g.prevMid = mid;
+    }
+  }
+
+  private touchUp(event: PointerEvent) {
+    const g = this.gesture;
+    if (this.stroking?.pointerId === event.pointerId) this.finishTouchStroke(event);
+    if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+    this.touches.delete(event.pointerId);
+    if (!g) return;
+    if (this.touches.size > 0) {
+      // Fingers lifting out of a pinch: stop navigating rather than jump into an orbit.
+      if (g.mode === "nav") g.mode = "idle";
+      return;
+    }
+    const now = performance.now();
+    const quick = !g.moved && now - g.start < TAP_MS;
+    if (quick && g.maxTouches === 2) {
+      this.undoStep();
+      this.onGesture("Undo");
+    } else if (quick && g.maxTouches >= 3) {
+      this.redoStep();
+      this.onGesture("Redo");
+    } else if (quick && g.maxTouches === 1 && g.mode === "orbit") {
+      if (now - this.lastTap.t < DOUBLE_TAP_MS && Math.hypot(event.clientX - this.lastTap.x, event.clientY - this.lastTap.y) < 40) {
+        this.resetView();
+        this.onGesture("View reset");
+        this.lastTap.t = 0;
+      } else {
+        this.lastTap = { t: now, x: event.clientX, y: event.clientY };
+      }
+    }
+    this.gesture = null;
+  }
+
+  private finishTouchStroke(event?: PointerEvent) {
+    const s = this.stroking;
+    if (!s) return;
+    this.endStroke(event ?? ({ pointerId: s.pointerId } as PointerEvent));
+    this.cursor.visible = false; // no hover on touch: the ring shows only while a finger is down
+  }
+
+  private orbitBy(dx: number, dy: number) {
+    const height = this.canvas.clientHeight || 1;
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const spherical = new THREE.Spherical().setFromVector3(offset);
+    spherical.theta -= (2 * Math.PI * dx) / height;
+    spherical.phi = Math.min(Math.PI - 0.05, Math.max(0.05, spherical.phi - (2 * Math.PI * dy) / height));
+    offset.setFromSpherical(spherical);
+    this.camera.position.copy(this.controls.target).add(offset);
+    this.camera.lookAt(this.controls.target);
+  }
+
+  private dollyBy(scale: number) {
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const length = Math.min(this.controls.maxDistance, Math.max(this.controls.minDistance, offset.length() * scale));
+    offset.setLength(length);
+    this.camera.position.copy(this.controls.target).add(offset);
+  }
+
+  private panBy(dx: number, dy: number) {
+    const distance = this.camera.position.distanceTo(this.controls.target);
+    const perPixel = (2 * distance * Math.tan((this.camera.fov * Math.PI) / 360)) / (this.canvas.clientHeight || 1);
+    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0);
+    const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1);
+    const move = right.multiplyScalar(-dx * perPixel).add(up.multiplyScalar(dy * perPixel));
+    this.camera.position.add(move);
+    this.controls.target.add(move);
+  }
+
+  resetView() {
+    this.controls.target.set(0, 0, 0);
+    this.camera.position.set(4.4, 3.1, 6.8);
+    this.camera.lookAt(0, 0, 0);
+  }
 
   private dab(brush: BrushName, point: THREE.Vector3, invert: boolean, strength: number, radius: number, symmetry: boolean) {
     if (brush === "grab") return;

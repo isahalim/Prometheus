@@ -155,7 +155,8 @@ h1 { font-size: clamp(3.25rem, 11vw, 8.5rem); font-weight: 400; letter-spacing: 
 .door { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
 .enrol { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
 .status { flex-basis: 100%; min-block-size: 1.2em; margin: 0.25rem 0 0; color: var(--muted); font-size: 0.8125rem; transition: opacity 0.3s ease; }
-.status.error, .toast { color: var(--accent); }
+.status.error, .toast.error { color: var(--accent); }
+.toast { color: var(--ink); }
 .fine { font-size: 0.8125rem; line-height: 1.55; color: var(--muted); max-inline-size: 30rem; margin-top: 2rem; }
 
 /* ---------- studio ---------- */
@@ -217,11 +218,8 @@ h1 { font-size: clamp(3.25rem, 11vw, 8.5rem); font-weight: 400; letter-spacing: 
 .memory summary { cursor: pointer; font-size: 0.6875rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
 .memory[open] { overflow-y: auto; max-block-size: 40vh; }
 .mem-label { margin: 0.7rem 0 0.3rem; font-size: 0.6875rem; color: var(--muted); display: flex; gap: 0.4rem; align-items: center; }
-.frames { display: flex; gap: 0.3rem; }
-.frames img { inline-size: calc((100% - 0.6rem) / 3); border-radius: 0.4rem; box-shadow: 0 1px 2px rgb(60 48 34 / 0.15); }
-.notes { margin: 0; padding-inline-start: 1.1rem; font-size: 0.75rem; line-height: 1.45; }
-.longterm { margin: 0; white-space: pre-wrap; font: inherit; font-size: 0.75rem; line-height: 1.45; background: rgb(60 48 34 / 0.06); border-radius: 0.6rem; padding: 0.5rem 0.6rem; }
-.skills { margin: 0; font-size: 0.75rem; }
+.frames { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.3rem; }
+.frames img { inline-size: 100%; border-radius: 0.4rem; box-shadow: 0 1px 2px rgb(60 48 34 / 0.15); }
 
 .dock { grid-column: 1 / -1; grid-row: 2; justify-self: center; display: flex; align-items: center; gap: 0.15rem; padding: 0.3rem; }
 .dock-label { padding: 0 0.6rem; font-size: 0.6875rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
@@ -248,4 +246,33 @@ h1 { font-size: clamp(3.25rem, 11vw, 8.5rem); font-weight: 400; letter-spacing: 
 
 @media (prefers-reduced-motion: reduce) {
   .clicky, .clicky:hover, .clicky:active, .wall, .pip, .toast, .status { transition: none; transform: none; animation: none; }
+}
+
+/* ---------- touch ----------
+ * The canvas owns every touch gesture (touch-action: none, set on .viewport
+ * and by OrbitControls). Everywhere else keeps the browser's pan and pinch for
+ * accessibility but drops double-tap-to-zoom, so taps on controls are instant.
+ * Sliders take the whole horizontal drag so a finger moves the thumb rather
+ * than scrolling the panel. Targets grow to ~44px when any pointer is coarse
+ * (Apple HIG / WCAG 2.5.5) — that includes a touchscreen laptop with a
+ * trackpad, where both pointers are present.
+ */
+.page, .tools, .agent, .dock, .gate { touch-action: manipulation; }
+input[type="range"] { touch-action: none; }
+.touch-hint { display: none; }
+
+@media (any-pointer: coarse) {
+  .touch-hint { display: block; }
+  .mouse-hint { display: none; }
+  .brushes button, .segmented button { min-block-size: 2.6rem; }
+  .shape-grid button, .seg-mini button { min-block-size: 2.2rem; padding-inline: 0.65rem; }
+  .ghost, .solid { min-block-size: 2.75rem; }
+  .dock .ghost { min-inline-size: 2.75rem; }
+  .field { min-block-size: 2.75rem; }
+  .toggle { min-block-size: 2.5rem; }
+  .toggle input { inline-size: 1.25rem; block-size: 1.25rem; }
+  input[type="range"] { block-size: 2rem; }
+  input[type="range"]::-webkit-slider-thumb { inline-size: 1.6rem; block-size: 1.6rem; }
+  input[type="range"]::-moz-range-thumb { inline-size: 1.6rem; block-size: 1.6rem; }
+  .memory summary { padding-block: 0.5rem; }
 }

@@ -1,6 +1,5 @@
 /**
- * Studio — the singleton that holds who may sculpt, and what the agent has
- * learned about them.
+ * Studio — the singleton that holds who may sculpt.
  *
  * Passkeys: the same enrollment-token + WebAuthn flow as mythosengine
  * (src/server/auth/webauthn.ts there), moved from D1 into this object's own
@@ -8,9 +7,8 @@
  * value; the passkeys themselves cannot be shared, because a WebAuthn
  * credential is bound to its rpID (the host), so each host enrols its own.
  *
- * Long-term memory is ONE text block capped at LIMITS.longTermChars. The agent
- * rewrites it whole (consolidating, dropping what is stale) instead of
- * appending, so it can never grow into something that crowds out the frames.
+ * (It once also held a long-term memory block; the agent rarely used it, so
+ * it was removed and the table is dropped on first start.)
  */
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -23,9 +21,7 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
   type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
-import { LIMITS } from "../../shared/protocol.ts";
 import type { AppEnv } from "../env.ts";
-import { capText } from "../agent/text.ts";
 
 const RP_NAME = "Prometheus";
 const OPERATOR_USER_ID = new Uint8Array(new TextEncoder().encode("operator"));
@@ -77,11 +73,7 @@ export class Studio extends DurableObject<AppEnv> {
         expires_at INTEGER NOT NULL,
         consumed INTEGER NOT NULL DEFAULT 0
       );
-      CREATE TABLE IF NOT EXISTS memory (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        text TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
+      DROP TABLE IF EXISTS memory;
     `);
   }
 
@@ -209,22 +201,5 @@ export class Studio extends DurableObject<AppEnv> {
     if (stored.counter !== 0 && newCounter !== 0 && newCounter <= stored.counter) return { kind: "counter_regression" };
     this.sql.exec("UPDATE credentials SET counter = ?, last_used_at = ? WHERE credential_id = ?", newCounter, new Date().toISOString(), stored.credential_id);
     return { kind: "ok" };
-  }
-
-  // ---- long-term memory: one capped, rewritable block ----
-
-  getLongTermMemory(): string {
-    return this.sql.exec<{ text: string }>("SELECT text FROM memory WHERE id = 1").toArray()[0]?.text ?? "";
-  }
-
-  /** Replaces the whole block. Over-long text is cut at the last full line that fits. */
-  setLongTermMemory(text: string): string {
-    const clean = capText(text, LIMITS.longTermChars);
-    this.sql.exec(
-      "INSERT INTO memory (id, text, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
-      clean,
-      new Date().toISOString(),
-    );
-    return clean;
   }
 }

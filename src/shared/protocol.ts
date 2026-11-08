@@ -15,11 +15,6 @@ export type BrushName = (typeof BRUSHES)[number];
 
 /** Caps that keep a request inside the token budget whatever the client sends. */
 export const LIMITS = {
-  /** Long-term memory: one consolidated text block, rewritten, never appended. */
-  longTermChars: 1200,
-  /** Working notes the agent keeps for itself within a session. */
-  workingNotes: 6,
-  workingNoteChars: 200,
   /** Recent frames (multi-view sheets) the agent sees besides the current one, by mode. */
   recentFrames: 5,
   recentFramesByMode: { lead: 5, follow: 3, watch: 3 },
@@ -224,7 +219,6 @@ export interface TurnResponse {
   done?: boolean;
   actions: AgentAction[];
   activeSkills: string[];
-  memory: { longTerm: string; notes: string[] };
   budget?: BudgetStatus;
   latencyMs?: number;
   tokens?: number;

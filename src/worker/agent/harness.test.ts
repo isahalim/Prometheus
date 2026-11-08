@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { LIMITS, type TurnRequest } from "../../shared/protocol.ts";
 import { buildRequestBody, emptyState, parseSteps } from "./harness.ts";
 import { selectSkills, MAX_ACTIVE_SKILLS } from "./skills.ts";
-import { capText } from "./text.ts";
 
 const call = (name: string, args: Record<string, unknown>) => ({ type: "function_call", id: name, name, arguments: args });
 
@@ -33,12 +32,10 @@ describe("parseSteps", () => {
     expect(parseSteps([stroke], "watch", true).actions).toHaveLength(1);
   });
 
-  it("caps actions per turn by mode, and working notes", () => {
+  it("caps actions per turn by mode", () => {
     const strokes = Array.from({ length: 40 }, () => call("sculpt_stroke", { brush: "draw", view: "front", points: [{ x: 0.5, y: 0.5 }], radius: 0.1, strength: 0.5 }));
-    const notes = call("set_working_notes", { notes: Array.from({ length: 20 }, (_, i) => `note ${i}`) });
-    const lead = parseSteps([...strokes, notes], "lead", true);
+    const lead = parseSteps(strokes, "lead", true);
     expect(lead.actions).toHaveLength(LIMITS.actionsByMode.lead);
-    expect(lead.notes).toHaveLength(LIMITS.workingNotes);
     expect(parseSteps(strokes, "follow", true).actions).toHaveLength(LIMITS.actionsByMode.follow);
   });
 
@@ -85,12 +82,11 @@ describe("parseSteps", () => {
     expect(parseSteps([call("declare_done", { summary: "x" })], "follow", false).done).toBeUndefined();
   });
 
-  it("collects say, intent, memory rewrite and skills", () => {
+  it("collects say, intent and skills", () => {
     const out = parseSteps(
       [
         call("say", { text: "Rounding the corners." }),
         call("update_intent", { summary: "a head", confidence: 1.4, plan: ["round", "eyes"] }),
-        call("rewrite_long_term_memory", { text: "Likes heads." }),
         call("use_skill", { name: "head" }),
         call("use_skill", { name: "nonexistent" }),
       ],
@@ -100,7 +96,6 @@ describe("parseSteps", () => {
     expect(out.say).toBe("Rounding the corners.");
     expect(out.intent?.confidence).toBe(1);
     expect(out.plan).toEqual(["round", "eyes"]);
-    expect(out.longTerm).toBe("Likes heads.");
     expect(out.skills).toEqual(["head"]);
   });
 });
@@ -127,7 +122,7 @@ describe("buildRequestBody", () => {
   it("sends the recent frames at low resolution, oldest first, then the current sheet", () => {
     const state = emptyState(0);
     state.frames = [1, 2, 3].map((t) => ({ t: t * 1000, thumb: `thumb${t}`, caption: `c${t}` }));
-    const { body } = buildRequestBody(request(3), state, "", 10_000);
+    const { body } = buildRequestBody(request(3), state, 10_000);
     expect(body.generation_config.thinking_level).toBe("high");
     const content = (body.input[0] as unknown as { content: { type: string; data?: string; resolution?: string }[] }).content;
     const images = content.filter((c) => c.type === "image");
@@ -137,7 +132,7 @@ describe("buildRequestBody", () => {
   });
 
   it("loads skills triggered by the human's words", () => {
-    const { skills } = buildRequestBody(request(0), emptyState(0), "", 0);
+    const { skills } = buildRequestBody(request(0), emptyState(0), 0);
     expect(skills.map((s) => s.name)).toContain("head");
   });
 });
@@ -146,14 +141,5 @@ describe("selectSkills", () => {
   it("never loads more than the cap plus one triggered skill", () => {
     const chosen = selectSkills(["blockout", "cleanup"], "smooth the head of the dragon creature with sharp edges");
     expect(chosen.length).toBeLessThanOrEqual(MAX_ACTIVE_SKILLS + 1);
-  });
-});
-
-describe("capText", () => {
-  it("keeps long-term memory inside its cap, cutting at a line where it can", () => {
-    const text = Array.from({ length: 100 }, (_, i) => `line ${i} about the human's taste`).join("\n");
-    const capped = capText(text, LIMITS.longTermChars);
-    expect(capped.length).toBeLessThanOrEqual(LIMITS.longTermChars);
-    expect(capped.endsWith("taste")).toBe(true);
   });
 });

@@ -2,7 +2,7 @@
  * Atelier — one per sculpting session (one browser tab).
  *
  * Holds the agent's SHORT-TERM memory: the last few multi-view frames (low-res
- * sheets, each captioned with what happened after it), the working notes,
+ * sheets, each captioned with what happened after it), the reading,
  * intent, plan, active skills and the recent dialogue. Every turn pushes the
  * current frame in and drops the oldest, so the agent always sees a sliding
  * window of the most recent moments rather than an ever-growing history.
@@ -42,9 +42,9 @@ export class Atelier extends DurableObject<AppEnv> {
     await this.alarm();
   }
 
-  async snapshot(): Promise<{ notes: string[]; intent?: WorkingState["intent"]; plan: string[]; frames: number; activeSkills: string[] }> {
+  async snapshot(): Promise<{ intent?: WorkingState["intent"]; plan: string[]; frames: number; activeSkills: string[] }> {
     const s = await this.load();
-    return { notes: s.notes, intent: s.intent, plan: s.plan, frames: s.frames.length, activeSkills: s.activeSkills };
+    return { intent: s.intent, plan: s.plan, frames: s.frames.length, activeSkills: s.activeSkills };
   }
 
   async turn(req: TurnRequest): Promise<TurnResponse> {
@@ -52,13 +52,11 @@ export class Atelier extends DurableObject<AppEnv> {
     const state = await this.load();
     await this.ctx.storage.setAlarm(started + IDLE_WIPE_MS);
     const gate = this.env.GATE.get(this.env.GATE.idFromName("gemini"));
-    const studio = this.env.STUDIO.get(this.env.STUDIO.idFromName("studio"));
 
     const base = (): TurnResponse => ({
       ok: false,
       actions: [],
       activeSkills: state.activeSkills,
-      memory: { longTerm: "", notes: state.notes },
     });
 
     if (req.trigger === "ambient") {
@@ -68,8 +66,7 @@ export class Atelier extends DurableObject<AppEnv> {
       state.lastAmbientAt = started;
     }
 
-    const longTerm = await studio.getLongTermMemory();
-    const { body, estTokens } = buildRequestBody(req, state, longTerm, started);
+    const { body, estTokens } = buildRequestBody(req, state, started);
     const priority = req.trigger === "human" ? "human" : req.mode === "lead" ? "lead" : "ambient";
     const result: GateResult = await gate.generate({ priority, body, estTokens });
 
@@ -77,7 +74,7 @@ export class Atelier extends DurableObject<AppEnv> {
 
     if (!result.ok) {
       await this.save(state);
-      return { ...base(), error: result.error, retryAfterMs: result.retryAfterMs, budget: result.budget, memory: { longTerm, notes: state.notes } };
+      return { ...base(), error: result.error, retryAfterMs: result.retryAfterMs, budget: result.budget };
     }
 
     const success = result as unknown as Extract<GateResult, { ok: true }>;
@@ -93,12 +90,9 @@ export class Atelier extends DurableObject<AppEnv> {
     if (parsed.stage) state.stage = parsed.stage;
     state.done = Boolean(parsed.done);
     if (parsed.plan) state.plan = parsed.plan;
-    if (parsed.notes) state.notes = parsed.notes;
     for (const name of parsed.skills) {
       state.activeSkills = [name, ...state.activeSkills.filter((s) => s !== name)].slice(0, MAX_ACTIVE_SKILLS);
     }
-    let memory = longTerm;
-    if (parsed.longTerm !== undefined) memory = await studio.setLongTermMemory(parsed.longTerm);
     if (parsed.say) pushDialogue(state, "agent", parsed.say);
 
     // Slide the short-term visual window: this turn's frame goes in, captioned
@@ -121,7 +115,6 @@ export class Atelier extends DurableObject<AppEnv> {
       done: state.done,
       actions: parsed.actions,
       activeSkills: state.activeSkills,
-      memory: { longTerm: memory, notes: state.notes },
       budget: success.budget,
       latencyMs: Date.now() - started,
       tokens: success.tokens,

@@ -122,8 +122,6 @@ export default {
         return json({ ok: true });
       }
 
-      if (pathname === "/api/memory" && method === "GET") return json({ longTerm: await studio.getLongTermMemory(), cap: LIMITS.longTermChars });
-      if (pathname === "/api/memory" && method === "DELETE") return json({ longTerm: await studio.setLongTermMemory("") });
 
       return json({ error: "not_found" }, 404);
     } catch (cause) {

@@ -119,6 +119,15 @@ async function enterStudio() {
 
   const studio = new Studio(viewport);
   studio.onFrame = ({ center, radius }) => wall?.setObject({ objectCenter: center, objectRadius: radius });
+  studio.onGesture = (name) => showToast(name);
+  // First touch on the canvas: say what the fingers do, once.
+  viewport.addEventListener(
+    "pointerdown",
+    (e) => e.pointerType === "touch" && showToast("Touch: 1 finger sculpts on the clay / orbits off it · 2 fingers zoom & pan · 2-finger tap undo · 3-finger tap redo"),
+    { once: true, capture: true }, // capture: the studio stops touch events from reaching later listeners
+  );
+  // Safari's own pinch-to-zoom must not fire over the canvas.
+  for (const type of ["gesturestart", "gesturechange"]) viewport.addEventListener(type, (e) => e.preventDefault());
 
   // Brushes
   const brushRail = $("brushes");
@@ -240,8 +249,9 @@ async function enterStudio() {
   const frames: string[] = [];
   const toast = $("toast");
   let toastTimer = 0;
-  const showToast = (text: string) => {
+  const showToast = (text: string, error = false) => {
     toast.textContent = text;
+    toast.classList.toggle("error", error);
     toast.classList.add("on");
     clearTimeout(toastTimer);
     toastTimer = window.setTimeout(() => toast.classList.remove("on"), 5000);
@@ -252,7 +262,7 @@ async function enterStudio() {
     onSculpting: (active) => setState(active ? "sculpting" : "idle"),
     onError: (message) => {
       post("error", message);
-      showToast(message);
+      showToast(message, true);
     },
     onBudget: renderBudget,
     onTurn: (response: TurnResponse, frameUrl: string) => {
@@ -267,12 +277,9 @@ async function enterStudio() {
       if (response.done) post("system", "Prometheus considers this finished. Sculpt or send a message and it picks up again.");
       if (response.actions.length) post("system", `${response.actions.length} action${response.actions.length > 1 ? "s" : ""}: ${response.actions.map(describeAction).join(", ")}`);
       frames.push(frameUrl);
-      while (frames.length > LIMITS.recentFrames) frames.shift();
+      // Mirror the server's window for this mode (lead keeps more frames).
+      while (frames.length > LIMITS.recentFramesByMode[loop.mode === "off" ? "follow" : loop.mode]) frames.shift();
       $("frames").replaceChildren(...frames.map((src) => Object.assign(document.createElement("img"), { src, alt: "Recent frame the agent remembers" })));
-      $("notes").replaceChildren(...(response.memory.notes.length ? response.memory.notes : ["—"]).map((n) => Object.assign(document.createElement("li"), { textContent: n })));
-      $("longterm").textContent = response.memory.longTerm || "—";
-      $("lt-count").textContent = `${response.memory.longTerm.length}/${LIMITS.longTermChars}`;
-      $("skills").textContent = response.activeSkills.join(", ") || "—";
     },
   });
   loop.start();
@@ -295,15 +302,6 @@ async function enterStudio() {
     post("human", text);
     await loop.ask(text);
   });
-
-  $("lt-clear").addEventListener("click", async () => {
-    await fetch("/api/memory", { method: "DELETE", credentials: "same-origin" });
-    $("longterm").textContent = "—";
-    $("lt-count").textContent = `0/${LIMITS.longTermChars}`;
-  });
-  const memory = await fetch("/api/memory", { credentials: "same-origin" }).then((r) => r.json() as Promise<{ longTerm: string }>);
-  $("longterm").textContent = memory.longTerm || "—";
-  $("lt-count").textContent = `${memory.longTerm.length}/${LIMITS.longTermChars}`;
 
   post("system", "Drag on the clay to sculpt. The agent watches your strokes and joins in — tell it what you're making.");
 }
