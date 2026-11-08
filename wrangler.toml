@@ -1,0 +1,58 @@
+# Prometheus — live pair sculpting with an AI agent.
+#
+# One Worker, three SQLite-backed Durable Objects:
+#   Studio   (singleton) passkeys, WebAuthn challenges, long-term agent memory
+#   Gate     (singleton) the ONLY caller of Gemini: paces every request across
+#                        the whole account to RPM/TPM/RPD, evenly spaced
+#   Atelier  (one per sculpting session) working memory, turn history, the
+#                        agent harness; wipes itself after the session idles
+# No D1, KV or R2: the API token only needs Workers Scripts:Edit to deploy, and
+# sculptures never leave the browser (they download as GLB/OBJ/STL).
+name = "prometheus"
+main = "src/worker/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# The custom domain prometheus.omnidynamics.dev is attached by CI through the
+# Workers Domains API (.github/workflows/ci.yml), not here: a custom_domain
+# route makes every `wrangler deploy` a zone-scoped write, so a token without
+# zone permissions would fail the whole deploy instead of just the attach step.
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/auth/*"]
+
+[vars]
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+# Published free-tier limits for the model (AI Studio rate-limit page).
+GEMINI_RPM_LIMIT = "15"
+GEMINI_TPM_LIMIT = "250000"
+GEMINI_RPD_LIMIT = "500"
+# What Prometheus actually spends: 12 rpm = one call every 5 s, evenly spaced,
+# leaving headroom for anything else sharing the same API key.
+GEMINI_RPM_TARGET = "12"
+# Requests per day held back for explicit human asks; ambient observation
+# stops when only this many remain.
+GEMINI_RPD_USER_RESERVE = "80"
+
+[[durable_objects.bindings]]
+name = "STUDIO"
+class_name = "Studio"
+
+[[durable_objects.bindings]]
+name = "GATE"
+class_name = "Gate"
+
+[[durable_objects.bindings]]
+name = "ATELIER"
+class_name = "Atelier"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Studio", "Gate", "Atelier"]
+
+[observability]
+enabled = true

@@ -1,0 +1,30 @@
+{
+  "name": "prometheus",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite build && wrangler dev",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
+    "test": "vitest run",
+    "deploy": "vite build && wrangler deploy"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.3",
+    "@vgpu/wgsl": "^0.4.0",
+    "three": "^0.187.0",
+    "three-mesh-bvh": "^0.9.18",
+    "vgpu": "^0.4.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "@webgpu/types": "^0.1.72",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.158.0"
+  }
+}
