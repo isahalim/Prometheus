@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LIMITS, type TurnRequest } from "../../shared/protocol.ts";
-import { buildRequestBody, emptyState, parseSteps } from "./harness.ts";
+import { buildRequestBody, describeAction, emptyState, parseSteps } from "./harness.ts";
 import { selectSkills, MAX_ACTIVE_SKILLS } from "./skills.ts";
 
 const call = (name: string, args: Record<string, unknown>) => ({ type: "function_call", id: name, name, arguments: args });
@@ -121,9 +121,15 @@ describe("buildRequestBody", () => {
 
   it("sends the recent frames at low resolution, oldest first, then the current sheet", () => {
     const state = emptyState(0);
-    state.frames = [1, 2, 3].map((t) => ({ t: t * 1000, thumb: `thumb${t}`, caption: `c${t}` }));
+    state.frames = [1, 2, 3].map((t) => ({ t: t * 1000, thumb: `thumb${t}`, human: "nothing", did: [`add sphere ${t}`], expected: `bump ${t}`, verdict: t < 3 ? `landed ${t}` : undefined }));
     const { body } = buildRequestBody(request(3), state, 10_000);
     expect(body.generation_config.thinking_level).toBe("high");
+    const text = JSON.stringify(body.input);
+    // Each step pairs the frame with the exact actions, the prediction and the later verdict.
+    expect(text).toContain("STEP -3");
+    expect(text).toContain("you then did: add sphere 1");
+    expect(text).toContain("you predicted: bump 2");
+    expect(text).toContain("your verdict on seeing the result: landed 1");
     const content = (body.input[0] as unknown as { content: { type: string; data?: string; resolution?: string }[] }).content;
     const images = content.filter((c) => c.type === "image");
     expect(images.map((i) => i.data)).toEqual(["thumb1", "thumb2", "thumb3", "x".repeat(200)]);
@@ -134,6 +140,18 @@ describe("buildRequestBody", () => {
   it("loads skills triggered by the human's words", () => {
     const { skills } = buildRequestBody(request(0), emptyState(0), 0);
     expect(skills.map((s) => s.name)).toContain("head");
+  });
+});
+
+describe("describeAction", () => {
+  it("keeps the numbers needed to attribute an effect", () => {
+    expect(describeAction({ kind: "shape", id: "a1", shape: "ellipsoid", mode: "add", center: [0.6, 0.2, 0], radius: 0.2, radii: [0.06, 0.18, 0.12], blend: 0.12, symmetry: true, why: "" })).toBe(
+      "add ellipsoid at (0.60,0.20,0.00) r=0.20 radii=(0.06,0.18,0.12) sym",
+    );
+    expect(describeAction({ kind: "form", id: "a2", op: "pull", center: [0, 0, 1], radius: 0.3, amount: 0.2, direction: [0, 0, 1], symmetry: false, why: "" })).toBe(
+      "pull at (0.00,0.00,1.00) r=0.30 amt=0.20 dir=(0.00,0.00,1.00)",
+    );
+    expect(describeAction({ kind: "global", id: "a3", op: "scale", amount: 0.5, scale: [0.8, 1.2, 1], why: "" })).toBe("scale (0.80,1.20,1.00)");
   });
 });
 

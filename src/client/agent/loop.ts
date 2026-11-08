@@ -9,7 +9,7 @@
  * the shared Gemini budget, so this layer only ever asks politely.
  */
 import { PANEL_PX, type ActionResult, type AgentMode, type BudgetStatus, type ShapeAction, type TurnRequest, type TurnResponse } from "../../shared/protocol.ts";
-import type { Studio } from "../sculpt/studio.ts";
+import { AgentCancelled, type Studio } from "../sculpt/studio.ts";
 
 export type LoopMode = AgentMode | "off";
 
@@ -37,7 +37,9 @@ export class AgentLoop {
   mode: LoopMode = "follow";
   /** Lead mode: the agent said the piece is finished; resumes on new human input. */
   leadDone = false;
-  readonly sessionId = crypto.randomUUID();
+  sessionId = crypto.randomUUID();
+  /** Bumped by reset(); a turn from an older session drops its response instead of applying it. */
+  private epoch = 0;
   private inFlight = false;
   private lastAmbientAt = 0;
   private blockedUntil = 0;
@@ -48,16 +50,35 @@ export class AgentLoop {
 
   start() {
     this.timer = window.setInterval(() => void this.maybeAmbient(), 1000);
-    window.addEventListener("pagehide", () => {
-      // End the server-side session now: its short-term memory is deleted rather than left to time out.
-      navigator.sendBeacon("/api/session/end", JSON.stringify({ sessionId: this.sessionId }));
-    });
+    window.addEventListener("pagehide", () => this.endServerSession());
     void this.refreshBudget();
     window.setInterval(() => void this.refreshBudget(), 20_000);
   }
 
   stop() {
     if (this.timer) window.clearInterval(this.timer);
+  }
+
+  /** End the server-side session now: its short-term memory is deleted rather than left to time out. */
+  private endServerSession() {
+    navigator.sendBeacon("/api/session/end", JSON.stringify({ sessionId: this.sessionId }));
+  }
+
+  /** A fresh agent: new server session (the old one's memory is deleted), nothing queued, default mode. */
+  reset() {
+    this.endServerSession();
+    this.epoch++;
+    this.sessionId = crypto.randomUUID();
+    this.mode = "follow";
+    this.leadDone = false;
+    this.queued = null;
+    this.lastResults = [];
+    this.lastAmbientAt = Date.now();
+    this.blockedUntil = 0;
+    this.inFlight = false;
+    this.studio.setAgentBusy(false);
+    this.events.onSculpting(false);
+    this.events.onThinking(false);
   }
 
   get busy() {
@@ -93,6 +114,7 @@ export class AgentLoop {
   private async turn(trigger: "human" | "ambient", message?: string) {
     if (this.inFlight) return;
     this.inFlight = true;
+    const epoch = this.epoch;
     this.events.onThinking(true);
     const mode: AgentMode = this.mode === "off" ? "follow" : this.mode;
     const capture = this.studio.capture(PANEL_PX[mode]);
@@ -132,6 +154,7 @@ export class AgentLoop {
       return;
     }
     if (response.budget) this.events.onBudget(response.budget);
+    if (epoch !== this.epoch) return; // a new session started while this turn was out: drop it
 
     if (!response.ok) {
       this.blockedUntil = Date.now() + Math.min(response.retryAfterMs ?? 5_000, 10 * 60_000);
@@ -155,13 +178,18 @@ export class AgentLoop {
       // Consecutive primitives share one voxel remesh.
       for (let i = 0; i < response.actions.length; i++) {
         const action = response.actions[i];
-        if (action.kind === "shape") {
-          const batch: ShapeAction[] = [];
-          while (i < response.actions.length && response.actions[i].kind === "shape") batch.push(response.actions[i++] as ShapeAction);
-          i--;
-          this.lastResults.push(...(await this.studio.agentShapes(batch)));
-        } else {
-          this.lastResults.push(await this.studio.agentAction(action, capture.half));
+        try {
+          if (action.kind === "shape") {
+            const batch: ShapeAction[] = [];
+            while (i < response.actions.length && response.actions[i].kind === "shape") batch.push(response.actions[i++] as ShapeAction);
+            i--;
+            this.lastResults.push(...(await this.studio.agentShapes(batch)));
+          } else {
+            this.lastResults.push(await this.studio.agentAction(action, capture.half));
+          }
+        } catch (error) {
+          if (error instanceof AgentCancelled) return; // reset() already cleaned up
+          throw error;
         }
       }
       this.studio.setAgentBusy(false);

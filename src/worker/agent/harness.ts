@@ -259,8 +259,8 @@ export interface WorkingState {
   intent?: { summary: string; confidence: number; target?: string };
   plan: string[];
   activeSkills: string[];
-  /** Short-term visual memory: the most recent sheets, replaced every turn. */
-  frames: { t: number; thumb: string; caption: string }[];
+  /** Short-term memory: the trajectory of recent steps (see MemoryStep), oldest first, a sliding window. */
+  frames: TrajectoryStep[];
   dialogue: { who: "human" | "agent"; text: string; t: number }[];
   lastAmbientAt: number;
   turns: number;
@@ -271,6 +271,38 @@ export interface WorkingState {
   assessment?: string;
   stage?: string;
   done?: boolean;
+}
+
+export interface TrajectoryStep {
+  t: number;
+  /** The low-res sheet captured at the start of this step (before the agent's actions). */
+  thumb: string;
+  /** What the human did between the previous step and this frame. */
+  human: string;
+  /** The agent's actions right after this frame, compactly, with their parameters. */
+  did: string[];
+  expected?: string;
+  /** How the actions ran in the browser (failures, misses), reported back next turn. */
+  ran?: string;
+  /** The agent's own verdict on this step, written when it saw the next frame. */
+  verdict?: string;
+}
+
+/** One line per action, with the numbers that matter for attributing its effect. */
+export function describeAction(a: AgentAction): string {
+  const p = (v?: [number, number, number]) => (v ? `(${v.map((n) => n.toFixed(2)).join(",")})` : "");
+  switch (a.kind) {
+    case "shape":
+      return `${a.mode} ${a.shape} at ${p(a.center)} r=${a.radius.toFixed(2)}${a.radii ? ` radii=${p(a.radii)}` : ""}${a.end ? ` to ${p(a.end)}` : ""}${a.symmetry ? " sym" : ""}`;
+    case "form":
+      return `${a.op} at ${p(a.center)} r=${a.radius.toFixed(2)} amt=${a.amount.toFixed(2)}${a.direction ? ` dir=${p(a.direction)}` : ""}${a.symmetry ? " sym" : ""}`;
+    case "global":
+      return a.op === "scale" ? `scale ${p(a.scale)}` : `${a.op} all ${a.amount.toFixed(2)}`;
+    case "stroke":
+      return `${a.brush}${a.invert ? "-inv" : ""} on ${a.view} ${a.points.length}pts r=${a.radius.toFixed(2)} s=${a.strength.toFixed(2)}${a.passes > 1 ? ` x${a.passes}` : ""}`;
+    case "remesh":
+      return "remesh";
+  }
 }
 
 export function emptyState(now: number): WorkingState {
@@ -341,13 +373,24 @@ export function buildRequestBody(req: TurnRequest, state: WorkingState, now: num
   const content: Record<string, unknown>[] = [{ type: "text", text: contextText(req, state, skills, now) }];
   const frames = state.frames.slice(-config.frames);
   if (frames.length) {
-    content.push({ type: "text", text: `RECENT FRAMES (oldest first; same 3x2 layout):` });
+    content.push({
+      type: "text",
+      text:
+        "SHORT-TERM MEMORY — your recent trajectory, oldest first. Each STEP is the frame you saw, then what you did right after it. " +
+        "The NEXT image (the next step, or the CURRENT SHEET for the last one) shows the result. Use the pairs to learn what each kind of action " +
+        "actually does here (size, direction, strength) and correct your calibration:",
+    });
     frames.forEach((f, i) => {
-      content.push({ type: "text", text: `Frame -${frames.length - i} (${Math.round((now - f.t) / 1000)}s ago): ${f.caption}` });
+      const lines = [`STEP -${frames.length - i} (${Math.round((now - f.t) / 1000)}s ago)`, `  human before this frame: ${f.human}`];
+      lines.push(f.did.length ? `  you then did: ${f.did.join(" | ")}` : "  you then did: nothing");
+      if (f.expected) lines.push(`  you predicted: ${f.expected}`);
+      if (f.ran) lines.push(`  ran: ${f.ran}`);
+      if (f.verdict) lines.push(`  your verdict on seeing the result: ${f.verdict}`);
+      content.push({ type: "text", text: lines.join("\n") });
       content.push({ type: "image", data: f.thumb, mime_type: "image/jpeg", resolution: "low" });
     });
   }
-  content.push({ type: "text", text: "CURRENT SHEET (this is now; act on this):" });
+  content.push({ type: "text", text: "CURRENT SHEET (now — the result of your most recent step; act on this):" });
   content.push({ type: "image", data: req.observation.sheet, mime_type: "image/jpeg", resolution: config.sheetResolution });
 
   const body = {
@@ -372,6 +415,8 @@ export interface ParsedTurn {
   waited?: string;
   assessment?: string;
   expected?: string;
+  /** The verdict on the previous step (assess.last_turn_verdict), stored on that step. */
+  verdict?: string;
   stage?: string;
   target?: { description: string; milestones: { text: string; done: boolean }[] };
   done?: string;
@@ -411,6 +456,7 @@ export function parseSteps(steps: InteractionStep[], mode: AgentMode, humanAsked
         const discrepancies = Array.isArray(a.discrepancies) ? a.discrepancies.slice(0, 4).map((d) => str(d, 160)).filter(Boolean) : [];
         out.assessment = [str(a.last_turn_verdict, 240), discrepancies.length ? `Gaps: ${discrepancies.join("; ")}` : ""].filter(Boolean).join(" ").slice(0, 600) || str(a.observations, 400);
         out.expected = str(a.expected_change, 300) || undefined;
+        out.verdict = str(a.last_turn_verdict, 240) || undefined;
         out.stage = str(a.stage, 20) || undefined;
         break;
       }

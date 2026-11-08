@@ -36,12 +36,17 @@ LL3M's planner/critic/verifier roles, 3DAxisPrompt's on-image axis overlays, and
 - **Modes:** **Lead** owns the piece: sets a target + milestones, iterates continuously (up to 24 actions/turn, sharpest sheet,
   5 recent frames, high thinking, 16K output) until it declares done; the Gate still spaces calls at 12/min.
   **Follow** extends/mirrors/cleans beside you (10 actions). **Watch** comments only. **Off.**
-- **Memory:** short-term only — a sliding window of recent multi-view frames (3, or 5 in Lead) each captioned with what
-  happened after it, plus the session's reading, target + milestones, plan and last critique/prediction. (A long-term memory
-  block and working notes were tried and removed: the agent almost never used them.) **Skills** (blockout, head, creature,
+- **Memory:** short-term only, as an **action → effect trajectory**: each of the last 3 steps (5 in Lead) is the frame the
+  agent saw, what the human did before it, the agent's exact actions after it (with coordinates), its prediction, how the
+  actions ran, and its own verdict once it saw the next frame. Consecutive frames show each step's effect; the current
+  sheet shows the latest. The panel shows the same steps. Plus the session's reading, target + milestones, plan and last
+  critique. (Long-term memory and working notes were tried and removed: the agent almost never used them.) If a turn that
+  must act (the human asked, or Lead) comes back as a critique only, the harness continues it once to get the actions.
+  **Skills** (blockout, head, creature,
   objects, hard-surface, cleanup, follow) load on demand.
 
-You can add mass too: pick a shape in **Add mass**, then click the clay (Add or Carve); **Remesh** evens out stretched areas.
+Start from Blender's cube (default) or a sphere; **New** starts a fully fresh session (new clay, new agent session whose
+old memory is deleted server-side, cleared panels and history). You can add mass too: pick a shape in **Add mass**, then click the clay (Add or Carve); **Remesh** evens out stretched areas.
 
 ### Touch
 

@@ -36,6 +36,24 @@ export class SculptMesh {
     return new SculptMesh(positions, index);
   }
 
+  /**
+   * A sphere with the cube's even, welded topology: every lattice point of the
+   * cube mapped onto the sphere with the area-preserving cube-to-sphere map
+   * (x·sqrt(1 - y²/2 - z²/2 + y²z²/3), and cyclic), so quads stay similar in
+   * size instead of crowding at the corners.
+   */
+  static sphere(radius = 1.15, subdivisions = CUBE_SUBDIVISIONS): SculptMesh {
+    const { positions, index } = buildCube(subdivisions);
+    for (let o = 0; o < positions.length; o += 3) {
+      const x = positions[o], y = positions[o + 1], z = positions[o + 2];
+      const x2 = x * x, y2 = y * y, z2 = z * z;
+      positions[o] = x * Math.sqrt(Math.max(0, 1 - y2 / 2 - z2 / 2 + (y2 * z2) / 3)) * radius;
+      positions[o + 1] = y * Math.sqrt(Math.max(0, 1 - z2 / 2 - x2 / 2 + (z2 * x2) / 3)) * radius;
+      positions[o + 2] = z * Math.sqrt(Math.max(0, 1 - x2 / 2 - y2 / 2 + (x2 * y2) / 3)) * radius;
+    }
+    return new SculptMesh(positions, index);
+  }
+
   constructor(positions: Float32Array, index: Uint32Array) {
     this.positions = positions;
     this.rest = positions.slice();

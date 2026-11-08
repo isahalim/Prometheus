@@ -15,7 +15,13 @@ export type BrushName = (typeof BRUSHES)[number];
 
 /** Caps that keep a request inside the token budget whatever the client sends. */
 export const LIMITS = {
-  /** Recent frames (multi-view sheets) the agent sees besides the current one, by mode. */
+  /**
+   * Short-term memory is a TRAJECTORY of recent steps: each step is the frame
+   * the agent saw, what the human did before it, the agent's exact actions
+   * right after it, its prediction, how the actions ran, and the verdict it
+   * reached on seeing the next frame. Consecutive frames therefore show the
+   * effect of each step; the current sheet shows the effect of the latest.
+   */
   recentFrames: 5,
   recentFramesByMode: { lead: 5, follow: 3, watch: 3 },
   /** Raw stroke summaries per observation. */
@@ -203,6 +209,16 @@ export interface BudgetStatus {
   resetsAt: string;
 }
 
+/** One step of the short-term trajectory, as shown in the UI (the thumbnail stays client-side). */
+export interface MemoryStep {
+  ageSeconds: number;
+  human: string;
+  did: string[];
+  expected?: string;
+  ran?: string;
+  verdict?: string;
+}
+
 export interface TurnResponse {
   ok: boolean;
   error?: string;
@@ -219,6 +235,8 @@ export interface TurnResponse {
   done?: boolean;
   actions: AgentAction[];
   activeSkills: string[];
+  /** The short-term trajectory, oldest first; the last step is this turn's (its outcome arrives next turn). */
+  memory?: MemoryStep[];
   budget?: BudgetStatus;
   latencyMs?: number;
   tokens?: number;

@@ -49,6 +49,13 @@ const MAX_PANEL = 320;
 const CLAY = new THREE.Color("#b8a693");
 const SHEET_BG = "#d6d0c6";
 
+/** Thrown inside an agent animation when the human started a new session. */
+export class AgentCancelled extends Error {
+  constructor() {
+    super("agent action cancelled by a new session");
+  }
+}
+
 interface MeshState {
   positions: Float32Array;
   index: Uint32Array;
@@ -598,6 +605,7 @@ export class Studio {
 
   /** Several primitives in one remesh; the ember visits each centre first. */
   async agentShapes(actions: ShapeAction[]): Promise<ActionResult[]> {
+    const gen = this.generation;
     const specs: ShapeSpec[] = [];
     for (const a of actions) {
       const spec: ShapeSpec = { shape: a.shape, center: a.center, radius: a.radius, radii: a.radii, end: a.end, axis: a.axis, minor: a.minor, mode: a.mode, blend: a.blend };
@@ -606,9 +614,9 @@ export class Studio {
       this.ghost.visible = true;
       this.ghost.scale.setScalar(Math.max(a.radius, ...(a.radii ?? [0])));
       this.ghost.position.set(...a.center);
-      for (let i = 0; i < 8; i++) await sleepFrame();
+      for (let i = 0; i < 8; i++) await this.agentFrame(gen);
     }
-    await sleepFrame();
+    await this.agentFrame(gen);
     const ms = this.remeshWith(specs);
     for (const a of actions) {
       this.strokeLog.push({ by: "agent", brush: "clay", invert: a.mode === "subtract", center: round3(a.center), from: round3(a.center), to: round3(a.end ?? a.center), radius: round(a.radius), strength: 1, dabs: 1, symmetry: a.symmetry, t: round((performance.now() - this.t0) / 1000) });
@@ -623,6 +631,7 @@ export class Studio {
   }
 
   private async agentForm(a: FormAction): Promise<ActionResult> {
+    const gen = this.generation;
     const steps = 12;
     const centers: Vec3[] = [v3(this.snapToSurface(a.center))];
     if (a.symmetry && Math.abs(centers[0][0]) > a.radius * 0.1) centers.push(mirrorX(centers[0]));
@@ -641,20 +650,21 @@ export class Studio {
         const d = new THREE.Vector3(...a.direction).normalize().multiplyScalar(a.amount / steps);
         this.ghost.position.add(d);
       }
-      await sleepFrame();
+      await this.agentFrame(gen);
     }
     this.strokeLog.push({ by: "agent", brush: a.op === "pull" || a.op === "push" ? "grab" : a.op === "add" ? "clay" : a.op === "carve" ? "draw" : a.op, invert: a.op === "carve" || a.op === "push", center: round3(centers[0]), from: round3(centers[0]), to: round3(centers[0]), radius: round(a.radius), strength: round(a.amount), dabs: steps, symmetry: a.symmetry, t: round((performance.now() - this.t0) / 1000) });
     return { id: a.id, ok: true, hitRatio: 1 };
   }
 
   private async agentGlobal(a: GlobalAction): Promise<ActionResult> {
+    const gen = this.generation;
     const all = Array.from({ length: this.mesh.vertexCount }, (_, i) => i);
     if (a.op === "smooth") {
       const iterations = Math.max(1, Math.round(a.amount * 10));
       for (let i = 0; i < iterations; i++) {
         smoothAll(this.mesh, 1);
         this.mesh.markDirty(all);
-        await sleepFrame();
+        await this.agentFrame(gen);
       }
     } else {
       const start = this.mesh.positions.slice();
@@ -665,7 +675,7 @@ export class Studio {
         const p = this.mesh.positions;
         for (let i = 0; i < p.length; i++) p[i] = start[i] + (target[i] - start[i]) * e;
         this.mesh.markDirty(all);
-        await sleepFrame();
+        await this.agentFrame(gen);
       }
     }
     return { id: a.id, ok: true, hitRatio: 1, note: `${a.op} ${a.amount}` };
@@ -673,6 +683,7 @@ export class Studio {
 
   /** Replays one agent stroke, animated, with the ember cursor. Resolves when the stroke is done. */
   async agentStroke(action: StrokeAction, half: number): Promise<ActionResult> {
+    const gen = this.generation;
     const hits: THREE.Vector3[] = [];
     const rays: THREE.Ray[] = [];
     for (const [x, y] of action.points) {
@@ -710,7 +721,7 @@ export class Studio {
           this.ghost.position.copy(position);
           sum.add(position);
           dabs++;
-          if (k % 2 === 1) await sleepFrame();
+          if (k % 2 === 1) await this.agentFrame(gen);
         }
       }
     } else {
@@ -728,7 +739,7 @@ export class Studio {
           this.ghost.position.copy(surface);
           sum.add(surface);
           dabs++;
-          if (dabs % 2 === 0) await sleepFrame();
+          if (dabs % 2 === 0) await this.agentFrame(gen);
         }
         if (hits.length === 1) break;
       }
@@ -811,9 +822,39 @@ export class Studio {
     this.onHistory(true, this.redo.length > 0);
   }
 
-  resetCube() {
-    this.pushUndo();
-    this.replaceMesh(SculptMesh.cube());
+  /** Bumped by newSession(): agent animations from an older session stop instead of touching the new clay. */
+  private generation = 0;
+
+  /**
+   * A fresh start: new clay (cube or sphere), empty history and stroke log, the
+   * default view. The agent side is reset by the caller (a new agent session).
+   */
+  newSession(start: "cube" | "sphere") {
+    this.generation++;
+    if (this.stroking) this.stroking = null;
+    this.controls.enabled = true;
+    this.armed = null;
+    this.canvas.style.cursor = "";
+    this.replaceMesh(start === "sphere" ? SculptMesh.sphere() : SculptMesh.cube());
+    this.undo = [];
+    this.redo = [];
+    this.strokeLog = [];
+    this.ghost.visible = false;
+    this.agentBusy = false;
+    this.resetView();
+    this.lastHumanActivity = performance.now();
+    this.onHistory(false, false);
+  }
+
+  /** True when the sculpture differs from how its session started (for the leave-page warning). */
+  get hasChanges(): boolean {
+    return this.undo.length > 0;
+  }
+
+  /** One animation frame of an agent action; throws AgentCancelled if a new session started meanwhile. */
+  private async agentFrame(gen: number) {
+    await sleepFrame();
+    if (gen !== this.generation) throw new AgentCancelled();
   }
 
   /** Voxel remesh, optionally blending primitives in. Synchronous (~0.3-1.5 s); callers show a status first. */

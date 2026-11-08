@@ -200,7 +200,38 @@ async function enterStudio() {
   };
   undo.addEventListener("click", () => studio.undoStep());
   redo.addEventListener("click", () => studio.redoStep());
-  $("reset").addEventListener("click", () => studio.resetCube());
+  // Start shape (cube by default) and "New": a fully fresh session — new clay, new agent session
+  // (the old one's server memory is deleted), and every agent panel cleared. Two-step so a stray
+  // click can't wipe a sculpture.
+  let startShape: "cube" | "sphere" = "cube";
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-start]")) {
+    button.addEventListener("click", () => {
+      startShape = button.dataset.start as "cube" | "sphere";
+      for (const b of document.querySelectorAll<HTMLButtonElement>("[data-start]")) {
+        b.setAttribute("aria-pressed", String(b === button));
+        b.setAttribute("aria-checked", String(b === button));
+      }
+      $("reset").textContent = `New ${startShape}`;
+    });
+  }
+  $("reset").textContent = "New cube";
+  let confirmTimer = 0;
+  $("reset").addEventListener("click", () => {
+    const button = $("reset");
+    if (studio.hasChanges && !button.dataset.confirm) {
+      button.dataset.confirm = "1";
+      button.textContent = "Tap again to start over";
+      confirmTimer = window.setTimeout(() => {
+        delete button.dataset.confirm;
+        button.textContent = `New ${startShape}`;
+      }, 3000);
+      return;
+    }
+    window.clearTimeout(confirmTimer);
+    delete button.dataset.confirm;
+    button.textContent = `New ${startShape}`;
+    freshSession();
+  });
 
   // Shapes: pick one, then click the clay where it should grow (or be carved).
   let shapeMode: "add" | "subtract" = "add";
@@ -263,7 +294,7 @@ async function enterStudio() {
     });
   }
   window.addEventListener("beforeunload", (e) => {
-    if (studio.mesh.positions.some((v, i) => Math.abs(v - studio.mesh.rest[i]) > 1e-3)) e.preventDefault();
+    if (studio.hasChanges) e.preventDefault();
   });
 
   // Agent
@@ -313,13 +344,59 @@ async function enterStudio() {
       if (response.done) post("system", "Prometheus considers this finished. Sculpt or send a message and it picks up again.");
       if (response.actions.length) post("system", `${response.actions.length} action${response.actions.length > 1 ? "s" : ""}: ${response.actions.map(describeAction).join(", ")}`);
       frames.push(frameUrl);
-      // Mirror the server's window for this mode (lead keeps more frames).
-      while (frames.length > LIMITS.recentFramesByMode[loop.mode === "off" ? "follow" : loop.mode]) frames.shift();
-      $("frames").replaceChildren(...frames.map((src) => Object.assign(document.createElement("img"), { src, alt: "Recent frame the agent remembers" })));
+      // The trajectory: each step's thumbnail beside what happened around it. The server keeps
+      // the same window; steps are matched from the newest end.
+      const steps = response.memory ?? [];
+      while (frames.length > Math.max(steps.length, 1)) frames.shift();
+      const shown = Math.min(frames.length, LIMITS.recentFramesByMode[loop.mode === "off" ? "follow" : loop.mode]);
+      $("frames").replaceChildren(
+        ...frames.slice(-shown).map((src, i, list) => {
+          const step = steps[steps.length - list.length + i];
+          const row = document.createElement("li");
+          row.append(Object.assign(document.createElement("img"), { src, alt: "Frame the agent saw at this step" }));
+          const text = document.createElement("div");
+          const line = (label: string, value: string | undefined) => {
+            if (!value) return;
+            const p = document.createElement("p");
+            p.innerHTML = `<b></b> `;
+            p.querySelector("b")!.textContent = label;
+            p.append(value);
+            text.append(p);
+          };
+          const when = document.createElement("p");
+          when.innerHTML = "<b></b>";
+          when.querySelector("b")!.textContent = i === list.length - 1 ? "Latest step" : `${step?.ageSeconds ?? "?"}s ago`;
+          text.append(when);
+          line("You", step?.human);
+          line("Did", step?.did.length ? step.did.join(" · ") : "nothing");
+          line("Expected", step?.expected);
+          line("Ran", step?.ran);
+          line("Verdict", step?.verdict ?? (i === list.length - 1 ? "judged on the next look" : undefined));
+          row.append(text);
+          return row;
+        }),
+      );
     },
   });
   loop.start();
   setState("idle");
+
+  /** Everything back to a first visit, except being signed in. */
+  function freshSession() {
+    loop.reset();
+    studio.newSession(startShape);
+    frames.length = 0;
+    $("frames").replaceChildren();
+    $("intent").textContent = "Waiting for your first strokes.";
+    for (const id of ["target", "plan", "assessment"]) $(id).textContent = "—";
+    $("milestones").replaceChildren();
+    $("milestones").hidden = true;
+    chat.replaceChildren();
+    for (const b of $("modes").querySelectorAll("button")) b.setAttribute("aria-checked", String(b.getAttribute("data-mode") === "follow"));
+    setState("idle");
+    post("system", `Fresh session on a new ${startShape}. Drag on the clay to sculpt — the agent starts over too.`);
+    showToast(`New ${startShape} — fresh session`);
+  }
 
   for (const button of $("modes").querySelectorAll<HTMLButtonElement>("button")) {
     button.addEventListener("click", () => {

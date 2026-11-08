@@ -96,8 +96,8 @@
           </form>
           <details class="memory">
             <summary>Short-term memory</summary>
-            <p class="mem-label">Recent frames the agent compares against (oldest → newest)</p>
-            <div class="frames" id="frames"></div>
+            <p class="mem-label">The agent's recent steps, oldest first: the frame it saw, what you did before it, what it did right after, what it expected, and its verdict once it saw the result.</p>
+            <ol class="frames" id="frames"></ol>
           </details>
         </aside>
 
@@ -107,7 +107,12 @@
           <button type="button" class="ghost clicky" data-export="obj">OBJ</button>
           <button type="button" class="ghost clicky" data-export="stl">STL</button>
           <span class="sep" aria-hidden="true"></span>
-          <button type="button" class="ghost clicky" id="reset">New cube</button>
+          <span class="dock-label">Start</span>
+          <span class="seg-mini" role="radiogroup" aria-label="Start shape">
+            <button type="button" role="radio" class="clicky" data-start="cube" aria-pressed="true" aria-checked="true">Cube</button>
+            <button type="button" role="radio" class="clicky" data-start="sphere" aria-pressed="false" aria-checked="false">Sphere</button>
+          </span>
+          <button type="button" class="ghost clicky" id="reset" title="Fresh session: new clay, new agent, cleared history">New</button>
         </footer>
         <p class="toast" id="toast" role="alert"></p>
       </main>

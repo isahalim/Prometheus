@@ -63,3 +63,15 @@ describe("shapeDistance", () => {
     }
   });
 });
+
+describe("SculptMesh.sphere", () => {
+  it("is a sphere of the requested radius with the cube's welded topology", () => {
+    const sphere = SculptMesh.sphere(1.15, 16);
+    const cube = SculptMesh.cube(16);
+    expect(sphere.vertexCount).toBe(cube.vertexCount);
+    for (let o = 0; o < sphere.positions.length; o += 3) {
+      const r = Math.hypot(sphere.positions[o], sphere.positions[o + 1], sphere.positions[o + 2]);
+      expect(Math.abs(r - 1.15)).toBeLessThan(1e-4);
+    }
+  });
+});
