@@ -45,6 +45,14 @@ You can add mass too: pick a shape in **Add mass**, then click the clay (Add or 
 
 ### Touch
 
+**Touchscreen MacBook Pro (macOS 27):** apps without native touch support — Chrome included — receive touch *translated*:
+a tap is a click, a finger swipe is a scroll, a pinch is a zoom (ctrl+wheel); no touch or pointermove events reach the page
+(`navigator.maxTouchPoints` is 0). So the canvas reads wheel events as gestures: a swipe that starts on the clay sculpts along
+the reconstructed finger path, a swipe off the clay orbits, a pinch zooms, and swipes over a slider move it. "Swipe on clay
+sculpts" can be switched off (a trackpad's two-finger scroll is the same event). `?debug=input` shows the raw events.
+
+**Real touch events (iPad, Windows, Android):**
+
 Pointer Events with every active pointer cached (MDN multi-touch guidance), `touch-action: none` only on the canvas, and
 gestures after Nomad Sculpt / tablet sculpting apps: one finger on the clay sculpts, one finger off it orbits; two fingers
 pinch-zoom and pan; two-finger tap undo; three-finger tap redo; double-tap empty space resets the view. A second finger

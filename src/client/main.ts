@@ -155,6 +155,23 @@ async function enterStudio() {
   };
   radius.addEventListener("input", syncSliders);
   strength.addEventListener("input", syncSliders);
+  // Touchscreen Macs turn a finger drag into scrolling, which a range input ignores — so a
+  // swipe (or trackpad scroll, or wheel) over a slider moves it: right/up = more.
+  for (const slider of [radius, strength]) {
+    slider.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        const min = Number(slider.min), max = Number(slider.max);
+        const unit = e.deltaMode === 1 ? 16 : 1;
+        const delta = (-e.deltaX + e.deltaY) * unit;
+        slider.value = String(Math.min(max, Math.max(min, Number(slider.value) + (delta * (max - min)) / 300)));
+        syncSliders();
+      },
+      { passive: false },
+    );
+  }
+  $<HTMLInputElement>("swipe-sculpts").addEventListener("change", (e) => (studio.settings.swipeSculpts = (e.target as HTMLInputElement).checked));
   $<HTMLInputElement>("symmetry").addEventListener("change", (e) => (studio.settings.symmetry = (e.target as HTMLInputElement).checked));
 
   const undo = $<HTMLButtonElement>("undo"), redo = $<HTMLButtonElement>("redo");
@@ -321,6 +338,32 @@ function renderBudget(b: BudgetStatus) {
   const el = $("budget");
   el.textContent = `${b.usedLastMinute}/${b.rpmTarget} rpm · ${b.usedToday}/${b.rpdLimit} today`;
   el.title = `${b.model} · paced at ${b.rpmTarget} of ${b.rpmLimit} rpm (one call every ${Math.round(60 / b.rpmTarget)}s) · ${Math.round(b.tokensLastMinute / 1000)}K of ${b.tpmLimit / 1000}K tpm · ${b.reserve} requests/day reserved for when you ask · resets ${new Date(b.resetsAt).toLocaleTimeString()}`;
+}
+
+// ---------- input diagnostics (?debug=input) ----------
+// Shows exactly what the browser receives from fingers, trackpad and mouse —
+// the quickest way to see how a new device translates touch.
+if (new URLSearchParams(location.search).get("debug") === "input") {
+  const panel = document.createElement("pre");
+  panel.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:99;margin:0;padding:8px 10px;max-width:46ch;font:11px/1.4 ui-monospace,monospace;background:rgb(255 255 255/.85);border-radius:10px;pointer-events:none;white-space:pre-wrap";
+  document.body.append(panel);
+  const lines: string[] = [];
+  const log = (text: string) => {
+    lines.push(text);
+    while (lines.length > 14) lines.shift();
+    panel.textContent = `maxTouchPoints=${navigator.maxTouchPoints} coarse=${matchMedia("(any-pointer: coarse)").matches} touchEvents=${"ontouchstart" in window}\n` + lines.join("\n");
+  };
+  let lastMove = 0;
+  for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
+    window.addEventListener(type, (e) => {
+      if (type === "pointermove" && performance.now() - lastMove < 120) return;
+      if (type === "pointermove") lastMove = performance.now();
+      log(`${type} ${e.pointerType} id=${e.pointerId} btn=${e.buttons} (${Math.round(e.clientX)},${Math.round(e.clientY)})`);
+    }, { capture: true });
+  }
+  window.addEventListener("wheel", (e) => log(`wheel dx=${e.deltaX.toFixed(1)} dy=${e.deltaY.toFixed(1)} mode=${e.deltaMode} ctrl=${e.ctrlKey}`), { capture: true, passive: true });
+  for (const type of ["touchstart", "touchmove", "touchend", "gesturestart", "click"]) window.addEventListener(type, () => log(type), { capture: true, passive: true });
+  log("ready — touch, swipe and pinch to see events");
 }
 
 // ---------- boot ----------

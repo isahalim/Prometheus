@@ -57,6 +57,7 @@
           <label class="slider">Radius <input type="range" id="radius" min="0.03" max="0.7" step="0.01" value="0.22" /><output id="radius-out">0.22</output></label>
           <label class="slider">Strength <input type="range" id="strength" min="0.05" max="1" step="0.01" value="0.5" /><output id="strength-out">0.50</output></label>
           <label class="toggle"><input type="checkbox" id="symmetry" checked /> X symmetry</label>
+          <label class="toggle" title="On a touchscreen Mac a finger drag arrives as a scroll; a trackpad two-finger scroll is the same event"><input type="checkbox" id="swipe-sculpts" checked /> Swipe on clay sculpts</label>
           <div class="shapes">
             <p class="mem-label">Add mass <span class="seg-mini"><button type="button" class="clicky" id="shape-add" aria-pressed="true">Add</button><button type="button" class="clicky" id="shape-carve" aria-pressed="false">Carve</button></span></p>
             <div class="shape-grid" id="shapes"></div>
@@ -66,7 +67,7 @@
             <button type="button" class="ghost clicky" id="undo" disabled title="Ctrl+Z">Undo</button>
             <button type="button" class="ghost clicky" id="redo" disabled title="Ctrl+Shift+Z">Redo</button>
           </div>
-          <p class="hint mouse-hint">Drag the clay to sculpt · drag empty space to orbit · right-drag pans · Ctrl inverts · Shift smooths · [ ] radius · pick a shape, then click the clay to add it</p>
+          <p class="hint mouse-hint">Drag (or swipe/scroll) on the clay to sculpt · drag or swipe empty space to orbit · pinch zooms · right-drag pans · Ctrl inverts · Shift smooths · [ ] radius · pick a shape, then click the clay to add it</p>
           <p class="hint touch-hint">Touch: one finger on the clay sculpts, on empty space orbits · two fingers pinch to zoom and drag to pan · two-finger tap undo · three-finger tap redo · double-tap empty space resets the view · pick a shape, then tap the clay</p>
         </aside>
 

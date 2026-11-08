@@ -26,6 +26,8 @@ export interface BrushSettings {
   radius: number;
   strength: number;
   symmetry: boolean;
+  /** A scroll-style swipe that starts on the clay sculpts (on by default; see onWheel). */
+  swipeSculpts: boolean;
 }
 
 export interface Capture {
@@ -41,6 +43,8 @@ const STROKE_GRACE_MS = 180;
 const TAP_MS = 280;
 const TAP_SLOP_PX = 12;
 const DOUBLE_TAP_MS = 320;
+const SWIPE_END_MS = 160;
+const SWIPE_POINTER_ID = -7;
 const MAX_PANEL = 320;
 const CLAY = new THREE.Color("#b8a693");
 const SHEET_BG = "#d6d0c6";
@@ -57,7 +61,7 @@ export class Studio {
   mesh = SculptMesh.cube();
   /** Fires when a remesh replaces the topology (UI shows vertex count, etc.). */
   onTopology: (vertices: number) => void = () => {};
-  readonly settings: BrushSettings = { brush: "draw", radius: 0.22, strength: 0.5, symmetry: true };
+  readonly settings: BrushSettings = { brush: "draw", radius: 0.22, strength: 0.5, symmetry: true, swipeSculpts: true };
   /** Called whenever the model changes or the agent cursor moves (wall glow, UI). */
   onFrame: (info: { center: [number, number]; radius: number }) => void = () => {};
   onHistory: (canUndo: boolean, canRedo: boolean) => void = () => {};
@@ -125,6 +129,9 @@ export class Studio {
     this.controls.minDistance = 2.2;
     this.controls.maxDistance = 16;
     this.controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    // The wheel is ours (see onWheel): on a touchscreen Mac a finger swipe arrives as scrolling.
+    this.controls.enableZoom = false;
+    canvas.addEventListener("wheel", this.onWheel, { passive: false });
 
     new ResizeObserver(() => this.resize()).observe(canvas);
     this.resize();
@@ -467,6 +474,77 @@ export class Studio {
     const move = right.multiplyScalar(-dx * perPixel).add(up.multiplyScalar(dy * perPixel));
     this.camera.position.add(move);
     this.controls.target.add(move);
+  }
+
+  // ---------- scroll gestures (touchscreen Macs, trackpads, mouse wheels) ----------
+  //
+  // On the touchscreen MacBook Pro, apps without native touch support — Chrome
+  // among them — get touches TRANSLATED: a tap is a click, a finger swipe is a
+  // scroll (wheel events, natural direction), a pinch is a zoom (wheel events
+  // with ctrlKey). No pointermove ever arrives for a dragging finger. So the
+  // wheel is read as a gesture, the same way the touch layer reads fingers:
+  //   swipe starting on the clay ... sculpt along the finger's path
+  //   swipe starting off the clay .. orbit
+  //   pinch (ctrlKey) .............. zoom
+  //   a notched mouse wheel ........ zoom
+  // A trackpad's two-finger scroll is the same event, so it behaves the same.
+  // The finger's position is reconstructed as start - accumulated delta, and a
+  // swipe ends after SWIPE_END_MS without events (momentum included).
+
+  private swipe: null | { mode: "sculpt" | "orbit"; x: number; y: number; timer: number; last: number } = null;
+
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault(); // never let the page zoom or scroll under the canvas
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+    const dx = e.deltaX * unit, dy = e.deltaY * unit;
+    if (e.ctrlKey) {
+      this.dollyBy(Math.exp(dy * 0.01));
+      return;
+    }
+    // A classic wheel notch (Windows/Linux Chrome: ±100 px, Firefox: lines). Anything finer is a swipe.
+    const notchedWheel = !this.swipe && (e.deltaMode !== 0 || (dx === 0 && Math.abs(dy) >= 100 && Number.isInteger(dy)));
+    if (notchedWheel) {
+      this.dollyBy(Math.exp(dy * 0.0015));
+      return;
+    }
+    if (!this.swipe) {
+      const fake = this.fakePointer(e, e.clientX, e.clientY);
+      const hit = this.settings.swipeSculpts && !this.isAgentBusy ? this.pick(fake) : null;
+      this.swipe = { mode: hit ? "sculpt" : "orbit", x: e.clientX, y: e.clientY, timer: 0, last: performance.now() };
+      if (hit) {
+        if (this.placeArmed(hit)) {
+          this.swipe = null;
+          return;
+        }
+        this.beginStroke(fake, hit);
+      }
+    }
+    const g = this.swipe;
+    // Natural scrolling: the content follows the finger, so the finger moved by -delta.
+    g.x -= dx;
+    g.y -= dy;
+    g.last = performance.now();
+    if (g.mode === "sculpt") {
+      this.continueStroke(this.fakePointer(e, g.x, g.y));
+    } else {
+      this.orbitBy(-dx, -dy);
+    }
+    window.clearTimeout(g.timer);
+    g.timer = window.setTimeout(this.endSwipe, SWIPE_END_MS);
+  };
+
+  private endSwipe = () => {
+    const g = this.swipe;
+    this.swipe = null;
+    if (g?.mode === "sculpt" && this.stroking) {
+      this.endStroke({ pointerId: this.stroking.pointerId } as PointerEvent);
+      this.cursor.visible = false;
+    }
+  };
+
+  /** A stand-in PointerEvent for the stroke code, at a reconstructed finger position. */
+  private fakePointer(e: WheelEvent, x: number, y: number): PointerEvent {
+    return { pointerId: SWIPE_POINTER_ID, pointerType: "mouse", clientX: x, clientY: y, pressure: 0.5, shiftKey: e.shiftKey, ctrlKey: false, metaKey: e.metaKey, altKey: e.altKey, button: 0 } as unknown as PointerEvent;
   }
 
   resetView() {
