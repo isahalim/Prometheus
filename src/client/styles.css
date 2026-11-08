@@ -258,7 +258,8 @@ h1 { font-size: clamp(3.25rem, 11vw, 8.5rem); font-weight: 400; letter-spacing: 
  * trackpad, where both pointers are present.
  */
 .page, .tools, .agent, .dock, .gate { touch-action: manipulation; }
-input[type="range"] { touch-action: none; }
+input[type="range"] { touch-action: none; block-size: 1.6rem; cursor: pointer; }
+input[type="range"]::-webkit-slider-thumb { inline-size: 1rem; block-size: 1rem; }
 .touch-hint { display: none; }
 
 @media (any-pointer: coarse) {

@@ -155,18 +155,37 @@ async function enterStudio() {
   };
   radius.addEventListener("input", syncSliders);
   strength.addEventListener("input", syncSliders);
-  // Touchscreen Macs turn a finger drag into scrolling, which a range input ignores — so a
-  // swipe (or trackpad scroll, or wheel) over a slider moves it: right/up = more.
+  // Touchscreen Macs turn a finger drag into scrolling, which a range input ignores. So a
+  // swipe over a slider is read as a drag: the thumb jumps to where the finger landed
+  // (the scroll event's position) and then follows the finger 1:1 horizontally, the
+  // finger's x reconstructed as start - accumulated deltaX (natural scrolling).
   for (const slider of [radius, strength]) {
+    let swipe: { x: number; timer: number } | null = null;
+    const setFromX = (x: number) => {
+      const rect = slider.getBoundingClientRect();
+      const thumb = 8; // half the thumb: the track's usable span is inset by it on both ends
+      const t = Math.min(1, Math.max(0, (x - rect.left - thumb) / Math.max(1, rect.width - 2 * thumb)));
+      const min = Number(slider.min), max = Number(slider.max), step = Number(slider.step) || 0.01;
+      slider.value = String(Math.round((min + t * (max - min)) / step) * step);
+      syncSliders();
+    };
     slider.addEventListener(
       "wheel",
       (e) => {
         e.preventDefault();
-        const min = Number(slider.min), max = Number(slider.max);
         const unit = e.deltaMode === 1 ? 16 : 1;
-        const delta = (-e.deltaX + e.deltaY) * unit;
-        slider.value = String(Math.min(max, Math.max(min, Number(slider.value) + (delta * (max - min)) / 300)));
-        syncSliders();
+        if (e.deltaMode === 0 && (swipe || Math.abs(e.deltaX) >= Math.abs(e.deltaY))) {
+          swipe ??= { x: e.clientX, timer: 0 };
+          swipe.x -= e.deltaX * unit;
+          setFromX(swipe.x);
+          window.clearTimeout(swipe.timer);
+          swipe.timer = window.setTimeout(() => (swipe = null), 180);
+        } else if (!swipe) {
+          // A mouse wheel (or a vertical swipe): nudge, up/away = more.
+          const min = Number(slider.min), max = Number(slider.max);
+          slider.value = String(Math.min(max, Math.max(min, Number(slider.value) - Math.sign(e.deltaY) * (max - min) * 0.04)));
+          syncSliders();
+        }
       },
       { passive: false },
     );
